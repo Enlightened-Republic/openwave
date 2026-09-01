@@ -30,6 +30,10 @@ MCP server structurally cannot.
 openclaw plugins install clawhub:openwave --accept-capabilities
 ```
 
+Published by `@EnlightenedRepublic`, source-linked to this repo. If `db.init`
+fails with "Could not locate the bindings file" after install, run the native
+rebuild step shown under **From npm** below (in the plugin's install directory).
+
 ### From npm
 
 ```bash
