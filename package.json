@@ -1,14 +1,31 @@
 {
   "name": "openwave",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Autonomic long-term memory for OpenClaw agents: injects the right memories into every turn automatically, runs the sleep system (consolidation, replay, extraction) in-process. Same engine as the sharpwave MCP server.",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
-  "repository": { "type": "git", "url": "https://github.com/Enlightened-Republic/openwave.git" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Enlightened-Republic/openwave.git"
+  },
   "homepage": "https://github.com/Enlightened-Republic/openwave#readme",
-  "keywords": ["openclaw", "openclaw-plugin", "agent-memory", "ai-memory", "sharpwave", "fsrs", "knowledge-graph", "spaced-repetition"],
-  "files": ["dist/index.js", "openclaw.plugin.json", "README.md", "LICENSE"],
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "agent-memory",
+    "ai-memory",
+    "sharpwave",
+    "fsrs",
+    "knowledge-graph",
+    "spaced-repetition"
+  ],
+  "files": [
+    "dist/index.js",
+    "openclaw.plugin.json",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "node esbuild.mjs",
     "typecheck": "tsc -p tsconfig.json",
@@ -16,9 +33,20 @@
     "prepublishOnly": "npm run build"
   },
   "openclaw": {
-    "extensions": ["./src/index.ts"],
-    "runtimeExtensions": ["./dist/index.js"],
-    "compat": { "pluginApi": ">=2026.5.0", "minGatewayVersion": "2026.5.0" }
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "runtimeExtensions": [
+      "./dist/index.js"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.5.0",
+      "minGatewayVersion": "2026.5.0"
+    },
+    "build": {
+      "openclawVersion": "2026.8.1",
+      "pluginSdkVersion": "2026.8.1"
+    }
   },
   "dependencies": {
     "better-sqlite3": "~12.11.1",
