@@ -1,0 +1,35 @@
+{
+  "name": "openwave",
+  "version": "0.1.0",
+  "description": "Autonomic long-term memory for OpenClaw agents: injects the right memories into every turn automatically, runs the sleep system (consolidation, replay, extraction) in-process. Same engine as the sharpwave MCP server.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "repository": { "type": "git", "url": "https://github.com/Enlightened-Republic/openwave.git" },
+  "homepage": "https://github.com/Enlightened-Republic/openwave#readme",
+  "keywords": ["openclaw", "openclaw-plugin", "agent-memory", "ai-memory", "sharpwave", "fsrs", "knowledge-graph", "spaced-repetition"],
+  "files": ["dist/index.js", "openclaw.plugin.json", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build"
+  },
+  "openclaw": {
+    "extensions": ["./src/index.ts"],
+    "runtimeExtensions": ["./dist/index.js"],
+    "compat": { "pluginApi": ">=2026.5.0", "minGatewayVersion": "2026.5.0" }
+  },
+  "dependencies": {
+    "better-sqlite3": "~12.11.1",
+    "sqlite-vec": "^0.1.9"
+  },
+  "devDependencies": {
+    "sharpwave-core": "^0.4.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

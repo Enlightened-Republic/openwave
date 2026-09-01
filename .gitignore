@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.log
+*.tgz
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+.npmrc
