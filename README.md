@@ -33,8 +33,15 @@ openclaw plugins install clawhub:openwave --accept-capabilities
 ### From npm
 
 ```bash
-openclaw plugins install npm:openwave --accept-capabilities
+openclaw plugins install npm:openwave --force --accept-capabilities
+cd ~/.openclaw/npm/projects/openwave && npm rebuild better-sqlite3
 ```
+
+`--force` acknowledges an npm (non-ClawHub) source. The `npm rebuild` step is
+**required** — OpenClaw's plugin installer runs `npm install --ignore-scripts`,
+so `better-sqlite3`'s native binary is not fetched/built during install. Without
+it, every `db.init` fails with "Could not locate the bindings file". Re-run the
+rebuild after any `openclaw plugins update openwave`.
 
 ### From source (development)
 
