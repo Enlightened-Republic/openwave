@@ -13,18 +13,18 @@ test("restart: DB handle stays open, scheduler timers released", async () => {
   const { api, rec } = makeMockApi({ enabled: true, config: { agents: ["lc-restart"] } });
   plugin.register(api as never);
 
-  // gateway_start arms the scheduler (4 timers). DB init is synchronous.
+  // gateway_start arms the scheduler (2 in-process timers post-Graft B: replay + sweep).
   await Promise.all((rec.hooks.get("gateway_start") ?? []).map((h) => h({}, {})));
   const armed = vi.getTimerCount();
-  expect(armed).toBeGreaterThanOrEqual(4);
+  expect(armed).toBeGreaterThanOrEqual(2);
 
   getDb("lc-restart").prepare("SELECT 1").get();
   const lc = rec.lifecycles[0];
 
   await lc.cleanup({ reason: "restart" });
 
-  // Scheduler handles cleared — the four timers are gone.
-  expect(vi.getTimerCount()).toBeLessThanOrEqual(armed - 4);
+  // Scheduler handles cleared — the two in-process timers are gone.
+  expect(vi.getTimerCount()).toBeLessThanOrEqual(armed - 2);
   // 2026-05-16 incident guard: restart must NOT close DB handles.
   expect(() => getDb("lc-restart").prepare("SELECT 1").get()).not.toThrow();
 });
