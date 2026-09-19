@@ -1,7 +1,7 @@
 {
   "id": "openwave",
   "name": "openwave",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Autonomic wake-up memory for OpenClaw agents. Injects identity, goals and query-relevant recall into every turn, and runs the sleep system (consolidation, awake replay, extraction) in-process. Powered by sharpwave-core.",
   "activation": {
     "onStartup": true
@@ -126,6 +126,21 @@
       "brainDocsDir": {
         "type": "string",
         "default": ""
+      },
+      "curatedTierDedupe": {
+        "type": "boolean",
+        "default": true,
+        "description": "When true (default), pass externalMemoryActive to sharpwave-core when MEMORY.md/USER.md is present so durable identity/goals are not double-injected."
+      },
+      "consolidationCron": {
+        "type": "string",
+        "default": "30 4 * * *",
+        "description": "Host cron expression for openwave:consolidation (LLM consolidation). Staggered after memory-core dreaming (0 3 * * *)."
+      },
+      "consolidationCronEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "When true (default), register openwave:consolidation on gateway_start. Still registered when dreaming is disabled (Telegram-temp)."
       }
     }
   }

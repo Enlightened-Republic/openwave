@@ -1,0 +1,195 @@
+# Engram Graft A+B — apply onto branch tip (after fetching this branch):
+#   git apply patches/engram-graft-ab-index.patch
+# Requires src/engram-graft.ts (already on this branch).
+# Local vitest: 26/26 passed with this patch applied to main.
+#
+# IMPORTANT: After merge prep, Hailey (or CI) should apply this patch so src/index.ts
+# contains the Graft A+B call sites. The helpers live in src/engram-graft.ts.
+#
+diff --git a/src/index.ts b/src/index.ts
+index a45bb2f..40509f2 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -25,8 +25,15 @@ import {
+   armSchedulers,
+   disarmSchedulers,
+   harvestExtraction,
++  runConsolidationPass,
+   type SchedulerHandles,
+ } from "./scheduler.js";
++import {
++  assemblyOptsFor,
++  ensureConsolidationCron,
++  maybeRunConsolidationFromCronEvent,
++  CONSOLIDATION_CRON_ID,
++} from "./engram-graft.js";
+ 
+ // ─── Config ────────────────────────────────────────────────────────────────────
+ //
+@@ -37,12 +44,21 @@ import {
+type OpenwaveConfig = core.BrainConfig & {
+  enabled: boolean;
+  agents: string[];
++  /** When true (default), omit host-curated durable identity/goals when MEMORY.md/USER.md present. */
++  curatedTierDedupe?: boolean;
++  /** Host cron expr for LLM consolidation (Graft B). Default staggered after memory-core dreaming. */
++  consolidationCron?: string;
++  /** When false, skip registering openwave:consolidation host cron. Default true. */
++  consolidationCronEnabled?: boolean;
+};
+
+const DEFAULT_OPENWAVE_CONFIG: OpenwaveConfig = {
+  ...core.DEFAULT_CONFIG,
+  enabled: true,
+  agents: ["main"],
++  curatedTierDedupe: true,
++  consolidationCron: "30 4 * * *",
++  consolidationCronEnabled: true,
+};
+
+// ─── Plugin entry point ────────────────────────────────────────────────────────
+@@ -229,6 +245,8 @@ const CRON_JOB_IDS = {
+  sws: "clawbrain-v4:sws",
+  rem: "clawbrain-v4:rem",
+  awakeReplay: "clawbrain-v4:awake-replay",
++  /** Engram Graft B — host cron for LLM consolidation (staggered vs memory-core 0 3 * * *). */
++  consolidation: CONSOLIDATION_CRON_ID,
+};
+
+// In-process sleep-system timers (awake-replay 30m, consolidation gate 60m,
+@@ -295,7 +313,12 @@ async function removeLegacyCronJobs(
+): Promise<void> {
+  try {
+    const existing = await cron.list({ includeDisabled: true });
+-    const legacyNames = new Set<string>(Object.values(CRON_JOB_IDS));
++    // Only the pre-2026-07-12 clawbrain-v4:* jobs — never openwave:consolidation.
++    const legacyNames = new Set<string>([
++      CRON_JOB_IDS.sws,
++      CRON_JOB_IDS.rem,
++      CRON_JOB_IDS.awakeReplay,
++    ]);
+    for (const job of existing) {
+      const matches = (job?.id && legacyNames.has(job.id)) || (job?.name && legacyNames.has(job.name));
+      if (!matches) continue;
+@@ -311,6 +334,7 @@ async function removeLegacyCronJobs(
+  }
+}
+
++
+// ── Plugin entry ───────────────────────────────────────────────────────────────
+
+export default definePluginEntry({
+@@ -569,15 +593,18 @@ export default definePluginEntry({
+        const cron = ctx?.getCron?.();
+        if (cron) {
+          await removeLegacyCronJobs(cron, log);
++          // Graft B: register host cron for LLM consolidation. Still armed when
++          // dreaming is disabled (Telegram-temp) — openwave owns this cadence.
++          await ensureConsolidationCron(cron, config, log);
++        } else {
++          log.warn(logFields({ op: "cron.consolidation", outcome: "skipped", reason: "no_cron_service" }));
+        }
+      } catch (err) {
+        log.warn(logFields({ op: "cron.remove_legacy", outcome: "error", error: String(err) }));
+      }
+
+-      // Arm the in-process sleep-system timers (awake-replay 30m, consolidation
+-      // gate 60m, embedding sweep 10m + a one-shot post-boot consolidation kick
+-      // at +5m). Held at module level so gateway_stop and lifecycle cleanup can
+-      // release them for the old runtime generation.
++      // Arm in-process timers (awake-replay 30m, embedding sweep 10m).
++      // LLM consolidation is host-cron only (Graft B).
+      disarmSchedulers(schedulerHandles);
+      schedulerHandles = armSchedulers(config.agents, config, log);
+
+@@ -600,30 +627,38 @@ export default definePluginEntry({
+    api.on("cron_changed", async (event: {
+      action?: string;
+      jobId?: string;
++      jobName?: string;
+      status?: string;
+      error?: string;
+      summary?: string;
+      durationMs?: number;
+      nextRunAtMs?: number;
+    }) => {
+-      const isOurs =
+-        event.jobId === CRON_JOB_IDS.sws ||
+-        event.jobId === CRON_JOB_IDS.rem ||
+-        event.jobId === CRON_JOB_IDS.awakeReplay;
+-      if (!isOurs) return;
+-
+-      log.info(
+-        logFields({
+-          op: "cron_changed",
+-          outcome: event.status ?? event.action ?? "unknown",
+-          jobName: event.jobId,
+-          durationMs: event.durationMs,
+-          nextRunAtMs: event.nextRunAtMs,
+-          error: event.error,
+-        }),
+-      );
++      const jobKey = event.jobId ?? event.jobName ?? "";
++      const isLegacy =
++        jobKey === CRON_JOB_IDS.sws ||
++        jobKey === CRON_JOB_IDS.rem ||
++        jobKey === CRON_JOB_IDS.awakeReplay;
++      if (isLegacy) {
++        log.info(
++          logFields({
++            op: "cron_changed",
++            outcome: event.status ?? event.action ?? "unknown",
++            jobName: jobKey,
++            status: event.status,
++            action: event.action,
++            error: event.error,
++            durationMs: event.durationMs,
++            nextRunAtMs: event.nextRunAtMs,
++          }),
++        );
++        return;
++      }
++      // Graft B: openwave:consolidation → in-process runConsolidationPass
++      maybeRunConsolidationFromCronEvent(event, config.agents, config, log);
+    });
+
++
+    // session_start: warm bootstrap cache + queue first-turn injection (T2.2 Layer 2)
+    api.on("session_start", async (event: { sessionId?: string; sessionKey?: string; agentId?: string }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string }) => {
+      const t0 = Date.now();
+@@ -656,7 +691,7 @@ export default definePluginEntry({
+      const surface: core.Surface = sessionKey.startsWith("voice:") ? "voice" : "chat";
+      let ctx = "";
+      try {
+-        ctx = await core.buildBootstrapContext(agentId, sessionId, config, log, surface);
++        ctx = await core.buildBootstrapContext(agentId, sessionId, config, log, surface, assemblyOptsFor(api, config, agentId));
+        bootstrapCache.set(sessionId, ctx);
+        log.info(logFields({ agentId, sessionId, op: "session_start.bootstrap", outcome: "ok", chars: ctx.length, surface, durationMs: Date.now() - t0 }));
+      } catch (err) {
+@@ -785,7 +820,7 @@ export default definePluginEntry({
+      // Layer 1: self-model header (every turn, never compacted).
+      let selfModelHeader = "";
+      try {
+-        selfModelHeader = await core.buildSelfModelHeader(agentId, config, log, surface);
++        selfModelHeader = await core.buildSelfModelHeader(agentId, config, log, surface, assemblyOptsFor(api, config, agentId));
+      } catch (err) {
+        log.warn(logFields({ agentId, sessionId, op: "selfModelHeader", outcome: "error", error: String(err) }));
+        selfModelHeader = core.BRAIN_HEADER;
+@@ -804,7 +839,7 @@ export default definePluginEntry({
+          bootstrapInjected.add(sessionId);
+        } else {
+          try {
+-            const bootstrapCtx = await core.buildBootstrapContext(agentId, sessionId, config, log, surface);
++            const bootstrapCtx = await core.buildBootstrapContext(agentId, sessionId, config, log, surface, assemblyOptsFor(api, config, agentId));
+            parts.push(bootstrapCtx);
+            bootstrapInjected.add(sessionId);
+          } catch (err) {
+@@ -923,7 +958,7 @@ export default definePluginEntry({
+      const agentId = resolveAgentId(undefined, hookCtx, config.agents);
+      if (!config.agents.includes(agentId)) return;
+      try {
+-        const header = await core.buildSelfModelHeader(agentId, config, log);
++        const header = await core.buildSelfModelHeader(agentId, config, log, "chat", assemblyOptsFor(api, config, agentId));
+        if (header) return { appendContext: header };
+      } catch (err) {
+        log.warn(logFields({ agentId, op: "heartbeat_prompt_contribution", outcome: "error", error: String(err) }));
