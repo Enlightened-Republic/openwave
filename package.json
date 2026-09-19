@@ -1,6 +1,6 @@
 {
   "name": "openwave",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Autonomic long-term memory for OpenClaw agents: injects the right memories into every turn automatically, runs the sleep system (consolidation, replay, extraction) in-process. Same engine as the sharpwave MCP server.",
   "license": "MIT",
   "type": "module",
@@ -53,7 +53,7 @@
     "sqlite-vec": "^0.1.9"
   },
   "devDependencies": {
-    "sharpwave-core": "^0.4.1",
+    "sharpwave-core": "^0.4.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
     "esbuild": "^0.24.0",
