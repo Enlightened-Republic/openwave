@@ -1,3 +1,8 @@
+# Engram Graft A+B — apply onto branch tip:
+#   git apply patches/engram-graft-ab-index.patch
+# Requires src/engram-graft.ts (already on this branch).
+# After apply, src/index.ts wires assemblyOptsFor + ensureConsolidationCron.
+#
 diff --git a/src/index.ts b/src/index.ts
 index a45bb2f..f5c98c0 100644
 --- a/src/index.ts
@@ -15,6 +20,26 @@ index a45bb2f..f5c98c0 100644
 +  maybeRunConsolidationFromCronEvent,
 +  CONSOLIDATION_CRON_ID,
 +} from "./engram-graft.js";
-
- // Apply with: git apply patches/engram-graft-ab-index.patch
- // (full index.ts also needs the call-site edits in this patch — see PR body)
+ 
+ // ─── Config ────────────────────────────────────────────────────────────────────
+ //
+@@ -37,12 +44,21 @@ import {
+ type OpenwaveConfig = core.BrainConfig & {
+   enabled: boolean;
+   agents: string[];
++  /** When true (default), omit host-curated durable identity/goals when MEMORY.md/USER.md present. */
++  curatedTierDedupe?: boolean;
++  /** Host cron expr for LLM consolidation (Graft B). Default staggered after memory-core dreaming. */
++  consolidationCron?: string;
++  /** When false, skip registering openwave:consolidation host cron. Default true. */
++  consolidationCronEnabled?: boolean;
+ };
+ 
+ const DEFAULT_OPENWAVE_CONFIG: OpenwaveConfig = {
+   ...core.DEFAULT_CONFIG,
+   enabled: true,
+   agents: ["main"],
++  curatedTierDedupe: true,
++  consolidationCron: "30 4 * * *",
++  consolidationCronEnabled: true,
+ };
