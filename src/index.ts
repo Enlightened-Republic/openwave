@@ -27,6 +27,7 @@ import {
   harvestExtraction,
   type SchedulerHandles,
 } from "./scheduler.js";
+import { OPENWAVE_SETTINGS_CONTRACT, type PersonaOverrideFields } from "./settings-contract.js";
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 //
@@ -37,12 +38,20 @@ import {
 type OpenwaveConfig = core.BrainConfig & {
   enabled: boolean;
   agents: string[];
+  // Per-agent-id overrides for the flat tunables below, keyed by OpenClaw
+  // agent id. Written by the Control UI settings page (see
+  // registerPersonaSettingsFeature) into
+  // plugins.entries.openwave.config.personaOverrides.<agentId>. Missing
+  // keys inherit the flat value above. See settings-contract.ts for the
+  // field list and openclaw.plugin.json for the persisted schema.
+  personaOverrides?: Record<string, PersonaOverrideFields>;
 };
 
 const DEFAULT_OPENWAVE_CONFIG: OpenwaveConfig = {
   ...core.DEFAULT_CONFIG,
   enabled: true,
   agents: ["main"],
+  personaOverrides: {},
 };
 
 // ─── Plugin entry point ────────────────────────────────────────────────────────
@@ -89,10 +98,51 @@ function definePluginEntry(opts: {
 
 // Minimal API type — the gateway provides a much wider surface but we only
 // pull in what openwave uses. This keeps us decoupled from openclaw types.
+// Shape of a registered session action and its invocation context, per
+// `docs/plugins/sdk-overview/host-hooks.md` ("Use the grouped namespaces for
+// new plugin code" -> `api.session.controls.registerSessionAction(...)`) and
+// the underlying `PluginSessionActionRegistration`/`PluginSessionActionContext`
+// types shipped in openclaw's plugin-sdk type declarations (confirmed against
+// the installed 2026.9.4 CLI, not guessed). The flat `api.registerSessionAction`
+// alias is deprecated with a 2026-10-01 removal date -- do not use it.
+type PluginJsonValue = unknown;
+type PluginSessionActionContext = {
+  pluginId: string;
+  actionId: string;
+  sessionKey?: string;
+  agentId?: string;
+  payload?: PluginJsonValue;
+  client?: { connId?: string; scopes: string[] };
+};
+type PluginSessionActionResult =
+  | { ok?: true; result?: PluginJsonValue; reply?: PluginJsonValue; continueAgent?: boolean }
+  | { ok: false; error: string; code?: string; details?: PluginJsonValue };
+type PluginSessionActionRegistration = {
+  id: string;
+  description?: string;
+  schema?: PluginJsonValue;
+  requiredScopes?: Array<"operator.read" | "operator.write">;
+  handler: (ctx: PluginSessionActionContext) => PluginSessionActionResult | void | Promise<PluginSessionActionResult | void>;
+};
+
+// Config read/write surface, per `docs/plugins/sdk-runtime/config-and-utilities.md`:
+// `api.runtime.config.current()` for the live snapshot, `mutateConfigFile(...)`
+// for a transactional write with an explicit `afterWrite` policy. `draft` is
+// typed loosely here for the same reason the rest of this file avoids
+// `OpenClawConfig` — this plugin does not import openclaw's types into its
+// bundled backend.
+type ConfigMutationApi = {
+  current: () => Record<string, unknown>;
+  mutateConfigFile: (opts: {
+    afterWrite: { mode: "auto" | "restart" | "none"; reason?: string };
+    mutate: (draft: Record<string, any>) => void; // eslint-disable-line @typescript-eslint/no-explicit-any
+  }) => Promise<{ afterWrite: unknown; followUp: unknown }>;
+};
+
 type OpenClawPluginApi = {
   pluginConfig?: Record<string, unknown>;
   logger?: { debug?: (msg: string) => void; info: (msg: string) => void; warn: (msg: string) => void; error?: (msg: string) => void };
-  runtime?: { cron?: CronService };
+  runtime?: { cron?: CronService; config?: ConfigMutationApi };
   session: {
     workflow: {
       enqueueNextTurnInjection: (injection: {
@@ -109,7 +159,7 @@ type OpenClawPluginApi = {
     };
     controls?: {
       registerControlUiDescriptor?: (descriptor: unknown) => void;
-      registerSessionAction?: (action: unknown) => void;
+      registerSessionAction?: (action: PluginSessionActionRegistration) => void;
     };
   };
   lifecycle: {
@@ -265,6 +315,170 @@ function resolveAgentId(event: unknown, hookCtx: unknown, configAgents: string[]
   }
   const key = e?.sessionKey ?? c?.sessionKey ?? "";
   return core.agentIdFromKey(key, configAgents);
+}
+
+// ── Persona settings (Control UI feature) ──────────────────────────────────────
+// Backend side of the openwave settings page. The contract (operation ids,
+// input/output shape) is shared with src/control-ui.ts via settings-contract.ts
+// so the two can't drift. Registered as session actions per
+// docs/plugins/sdk-overview/host-hooks.md; see the OpenClawPluginApi additions
+// above for the exact call shape this was checked against.
+
+const PERSONA_FIELD_KEYS = [
+  "contextBudget",
+  "workingMemorySlots",
+  "spreadingActivationHops",
+  "activationThreshold",
+  "inhibitionStrength",
+  "efDefault",
+  "retrievabilityFloor",
+  "consolidationTimeGateHours",
+  "consolidationEpisodeGate",
+  "pruneAfterDays",
+] as const satisfies ReadonlyArray<keyof PersonaOverrideFields>;
+
+function baseFieldsFromConfig(config: OpenwaveConfig): PersonaOverrideFields {
+  const base: PersonaOverrideFields = {};
+  for (const key of PERSONA_FIELD_KEYS) {
+    const value = config[key as keyof OpenwaveConfig];
+    if (typeof value === "number") base[key] = value;
+  }
+  return base;
+}
+
+function mergePersonaFields(base: PersonaOverrideFields, override: PersonaOverrideFields | undefined): PersonaOverrideFields {
+  if (!override) return { ...base };
+  const merged: PersonaOverrideFields = { ...base, ...override };
+  if (base.emotionalProfile || override.emotionalProfile) {
+    merged.emotionalProfile = { ...base.emotionalProfile, ...override.emotionalProfile };
+  }
+  return merged;
+}
+
+// Registers the three settings-page session actions on the SAME plugin id
+// ("openwave") rather than via `defineFeaturePlugin` — that helper builds its
+// own standalone `definePluginEntry`, which would make "openwave settings" a
+// second plugin instead of a page on this one. `api.session.controls.registerSessionAction`
+// is the primitive `defineFeaturePlugin` itself calls under the hood
+// (confirmed by reading the installed plugin-sdk's compiled feature-plugin.js),
+// so this reaches the identical wire behavior `createFeatureClient` on the
+// browser side expects (`plugins.sessionAction` RPC with `{pluginId, actionId, payload}`).
+function registerPersonaSettingsFeature(
+  api: OpenClawPluginApi,
+  config: OpenwaveConfig,
+  log: { info: (msg: string) => void; warn: (msg: string) => void },
+): void {
+  const registerSessionAction = api.session.controls?.registerSessionAction;
+  const mutateConfigFile = api.runtime?.config?.mutateConfigFile;
+  if (!registerSessionAction) {
+    log.warn(logFields({ op: "registerPersonaSettingsFeature", outcome: "unavailable", reason: "session.controls.registerSessionAction missing on this host" }));
+    return;
+  }
+
+  const buildResult = (agentId: string) => {
+    const base = baseFieldsFromConfig(config);
+    const override = config.personaOverrides?.[agentId] ?? {};
+    return {
+      agentId,
+      base,
+      override,
+      effective: mergePersonaFields(base, override),
+    };
+  };
+
+  registerSessionAction({
+    id: "getPersonaConfig",
+    description: OPENWAVE_SETTINGS_CONTRACT.operations.getPersonaConfig.description,
+    schema: OPENWAVE_SETTINGS_CONTRACT.operations.getPersonaConfig.input,
+    requiredScopes: ["operator.read"],
+    handler(ctx) {
+      const payload = ctx.payload as { agentId?: string } | undefined;
+      const agentId = payload?.agentId;
+      if (!agentId) return { ok: false, error: "agentId is required" };
+      return { ok: true, result: buildResult(agentId) };
+    },
+  });
+
+  registerSessionAction({
+    id: "setPersonaOverride",
+    description: OPENWAVE_SETTINGS_CONTRACT.operations.setPersonaOverride.description,
+    schema: OPENWAVE_SETTINGS_CONTRACT.operations.setPersonaOverride.input,
+    requiredScopes: ["operator.write"],
+    async handler(ctx) {
+      const payload = ctx.payload as { agentId?: string; patch?: PersonaOverrideFields } | undefined;
+      const agentId = payload?.agentId;
+      if (!agentId) return { ok: false, error: "agentId is required" };
+      if (!mutateConfigFile) {
+        return { ok: false, error: "This host does not expose api.runtime.config.mutateConfigFile — cannot persist the change." };
+      }
+      const patch = payload?.patch ?? {};
+      const nextOverride = mergePersonaFields(config.personaOverrides?.[agentId] ?? {}, patch);
+      try {
+        await mutateConfigFile({
+          afterWrite: { mode: "auto" },
+          mutate(draft) {
+            draft.plugins ??= {};
+            draft.plugins.entries ??= {};
+            draft.plugins.entries.openwave ??= {};
+            draft.plugins.entries.openwave.config ??= {};
+            draft.plugins.entries.openwave.config.personaOverrides ??= {};
+            draft.plugins.entries.openwave.config.personaOverrides[agentId] = nextOverride;
+          },
+        });
+      } catch (err) {
+        log.warn(logFields({ op: "setPersonaOverride", agentId, outcome: "error", error: String(err) }));
+        return { ok: false, error: `Failed to write config: ${String(err)}` };
+      }
+      // Reflect the write in this process's view immediately; the host's
+      // "auto" afterWrite policy still owns whether/when it hot-reloads the
+      // plugin (see docs/gateway/config-extensions.md "ordinary plugin
+      // policy and entry changes hot-reload the plugin runtime").
+      config.personaOverrides = { ...config.personaOverrides, [agentId]: nextOverride };
+      log.info(logFields({ op: "setPersonaOverride", agentId, outcome: "ok" }));
+      return { ok: true, result: buildResult(agentId) };
+    },
+  });
+
+  registerSessionAction({
+    id: "clearPersonaOverride",
+    description: OPENWAVE_SETTINGS_CONTRACT.operations.clearPersonaOverride.description,
+    schema: OPENWAVE_SETTINGS_CONTRACT.operations.clearPersonaOverride.input,
+    requiredScopes: ["operator.write"],
+    async handler(ctx) {
+      const payload = ctx.payload as { agentId?: string; field?: keyof PersonaOverrideFields } | undefined;
+      const agentId = payload?.agentId;
+      if (!agentId) return { ok: false, error: "agentId is required" };
+      if (!mutateConfigFile) {
+        return { ok: false, error: "This host does not expose api.runtime.config.mutateConfigFile — cannot persist the change." };
+      }
+      const current = { ...(config.personaOverrides?.[agentId] ?? {}) };
+      if (payload?.field) {
+        delete current[payload.field];
+      }
+      const clearWhole = !payload?.field;
+      try {
+        await mutateConfigFile({
+          afterWrite: { mode: "auto" },
+          mutate(draft) {
+            const overrides = draft.plugins?.entries?.openwave?.config?.personaOverrides;
+            if (!overrides) return;
+            if (clearWhole) delete overrides[agentId];
+            else overrides[agentId] = current;
+          },
+        });
+      } catch (err) {
+        log.warn(logFields({ op: "clearPersonaOverride", agentId, outcome: "error", error: String(err) }));
+        return { ok: false, error: `Failed to write config: ${String(err)}` };
+      }
+      config.personaOverrides = { ...config.personaOverrides };
+      if (clearWhole) delete config.personaOverrides[agentId];
+      else config.personaOverrides[agentId] = current;
+      log.info(logFields({ op: "clearPersonaOverride", agentId, field: payload?.field, outcome: "ok" }));
+      return { ok: true, result: buildResult(agentId) };
+    },
+  });
+
+  log.info(logFields({ op: "registerPersonaSettingsFeature", outcome: "ok", operations: 3 }));
 }
 
 // ── Cron job registration helper ───────────────────────────────────────────────
@@ -1075,6 +1289,12 @@ export default definePluginEntry({
         log.warn(logFields({ agentId, op: "after_compaction.handle", outcome: "error", error: String(err) }));
       }
     });
+
+    try {
+      registerPersonaSettingsFeature(api, config, log);
+    } catch (err) {
+      log.warn(logFields({ op: "registerPersonaSettingsFeature", outcome: "error", error: String(err) }));
+    }
 
     log.info(logFields({
       op: "register",

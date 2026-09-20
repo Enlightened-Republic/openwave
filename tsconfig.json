@@ -11,5 +11,6 @@
     "noEmit": true,
     "rootDir": "src"
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "exclude": ["src/control-ui.ts"]
 }

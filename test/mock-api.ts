@@ -9,21 +9,54 @@ export type Recorded = {
   tools: any[];
   injections: any[];
   lifecycles: any[];
+  sessionActions: Map<string, { id: string; description?: string; schema?: unknown; requiredScopes?: string[]; handler: (ctx: any) => any }>;
 };
 
-export function makeMockApi(pluginConfig: Record<string, unknown>) {
-  const rec: Recorded = { hooks: new Map(), tools: [], injections: [], lifecycles: [] };
+export type MockApiOptions = {
+  /** Omit to simulate an older host with no session.controls surface. */
+  withSessionControls?: boolean;
+  /** Omit to simulate a host with no api.runtime.config surface. */
+  withConfigMutation?: boolean;
+  /** Backing store mutateConfigFile writes into; defaults to a fresh {}. */
+  configFile?: Record<string, any>;
+};
+
+export function makeMockApi(pluginConfig: Record<string, unknown>, opts: MockApiOptions = {}) {
+  const rec: Recorded = { hooks: new Map(), tools: [], injections: [], lifecycles: [], sessionActions: new Map() };
+  const withSessionControls = opts.withSessionControls ?? true;
+  const withConfigMutation = opts.withConfigMutation ?? true;
+  const configFile: Record<string, any> = opts.configFile ?? {};
+
+  const session: Record<string, unknown> = {
+    workflow: {
+      async enqueueNextTurnInjection(inj: any) {
+        rec.injections.push(inj);
+        return { enqueued: true, id: "mock", sessionKey: inj.sessionKey };
+      },
+    },
+  };
+  if (withSessionControls) {
+    session["controls"] = {
+      registerSessionAction(action: any) { rec.sessionActions.set(action.id, action); },
+    };
+  }
+
+  const runtime: Record<string, unknown> = {};
+  if (withConfigMutation) {
+    runtime["config"] = {
+      current: () => configFile,
+      async mutateConfigFile({ mutate }: { mutate: (draft: Record<string, any>) => void }) {
+        mutate(configFile);
+        return { afterWrite: { mode: "auto" }, followUp: {} };
+      },
+    };
+  }
+
   const api = {
     pluginConfig,
     logger: { info() {}, warn() {}, error() {}, debug() {} },
-    session: {
-      workflow: {
-        async enqueueNextTurnInjection(inj: any) {
-          rec.injections.push(inj);
-          return { enqueued: true, id: "mock", sessionKey: inj.sessionKey };
-        },
-      },
-    },
+    runtime,
+    session,
     lifecycle: {
       registerRuntimeLifecycle(l: any) { rec.lifecycles.push(l); },
     },
@@ -38,5 +71,10 @@ export function makeMockApi(pluginConfig: Record<string, unknown>) {
   };
   const fire = (name: string, event: any, ctx: any) =>
     Promise.all((rec.hooks.get(name) ?? []).map((h) => h(event, ctx)));
-  return { api, rec, fire };
+  const callAction = (id: string, payload: Record<string, unknown>) => {
+    const action = rec.sessionActions.get(id);
+    if (!action) throw new Error(`session action not registered: ${id}`);
+    return action.handler({ pluginId: "openwave", actionId: id, payload });
+  };
+  return { api, rec, fire, callAction, configFile };
 }

@@ -126,7 +126,68 @@
       "brainDocsDir": {
         "type": "string",
         "default": ""
+      },
+      "personaOverrides": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "contextBudget": {
+              "type": "number"
+            },
+            "workingMemorySlots": {
+              "type": "number"
+            },
+            "spreadingActivationHops": {
+              "type": "number"
+            },
+            "activationThreshold": {
+              "type": "number"
+            },
+            "inhibitionStrength": {
+              "type": "number"
+            },
+            "efDefault": {
+              "type": "number"
+            },
+            "retrievabilityFloor": {
+              "type": "number"
+            },
+            "consolidationTimeGateHours": {
+              "type": "number"
+            },
+            "consolidationEpisodeGate": {
+              "type": "number"
+            },
+            "pruneAfterDays": {
+              "type": "number"
+            },
+            "emotionalProfile": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Reserved for sharpwave-core's valence/arousal split (not yet shipped -- see research/emotional-memory-openclaw-integration.md proposal 3). Accepted and stored but has no runtime effect until sharpwave-core exposes these fields on computeSalience.",
+              "properties": {
+                "valenceBias": {
+                  "type": "number",
+                  "minimum": -1,
+                  "maximum": 1
+                },
+                "arousalScale": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 2
+                }
+              }
+            }
+          }
+        },
+        "default": {},
+        "description": "Per-agent-id overrides layered over the flat config above, keyed by OpenClaw agent id (e.g. \"mila\"). Mirrors the agents.entries.<id> override idiom (docs/gateway/config-agents/entries-and-multi-agent.md) applied to openwave's own config. Missing keys inherit the flat value above; emotionalProfile fields are accepted ahead of the engine work that will consume them."
       }
     }
+  },
+  "controlUi": {
+    "entry": "dist/control-ui/c70aba5da3775a85/index.js"
   }
 }
