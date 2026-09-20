@@ -19,6 +19,8 @@ export type MockApiOptions = {
   withConfigMutation?: boolean;
   /** Backing store mutateConfigFile writes into; defaults to a fresh {}. */
   configFile?: Record<string, any>;
+  /** When set, api.runtime.agent.resolveAgentWorkspaceDir returns this dir for every agent. */
+  workspaceDir?: string;
 };
 
 export function makeMockApi(pluginConfig: Record<string, unknown>, opts: MockApiOptions = {}) {
@@ -50,6 +52,11 @@ export function makeMockApi(pluginConfig: Record<string, unknown>, opts: MockApi
         return { afterWrite: { mode: "auto" }, followUp: {} };
       },
     };
+  }
+
+  if (opts.workspaceDir !== undefined) {
+    const dir = opts.workspaceDir;
+    runtime["agent"] = { resolveAgentWorkspaceDir: (_cfg: unknown, _agentId: string) => dir };
   }
 
   const api = {

@@ -21,6 +21,7 @@ import {
   dispatchBrainTool,
 } from "sharpwave-core";
 import { decideBootstrapDelivery, bootstrapIdempotencyKey } from "./bootstrap-delivery.js";
+import { hasExternalMemoryCoreWorkspace } from "./memory-detection.js";
 import {
   armSchedulers,
   disarmSchedulers,
@@ -142,7 +143,12 @@ type ConfigMutationApi = {
 type OpenClawPluginApi = {
   pluginConfig?: Record<string, unknown>;
   logger?: { debug?: (msg: string) => void; info: (msg: string) => void; warn: (msg: string) => void; error?: (msg: string) => void };
-  runtime?: { cron?: CronService; config?: ConfigMutationApi };
+  runtime?: {
+    cron?: CronService;
+    config?: ConfigMutationApi;
+    // docs/plugins/sdk-runtime/agent.md: resolves an agent's OpenClaw workspace dir.
+    agent?: { resolveAgentWorkspaceDir?: (cfg: unknown, agentId: string) => string | undefined };
+  };
   session: {
     workflow: {
       enqueueNextTurnInjection: (injection: {
@@ -554,6 +560,15 @@ export default definePluginEntry({
       return;
     }
 
+    // When the host already curates MEMORY.md/USER.md (OpenClaw memory-core) for an
+    // agent, that tier owns goals: tell sharpwave-core to skip its goals block so the
+    // agent isn't handed two copies. Presence check only, evaluated per call so a
+    // MEMORY.md curated mid-run takes effect without a restart; fails closed (false =
+    // inject as usual) on older hosts. See memory-detection.ts.
+    const contextOptsFor = (agentId: string): { externalMemoryActive: boolean } => ({
+      externalMemoryActive: hasExternalMemoryCoreWorkspace(api, api.runtime?.config?.current?.(), agentId),
+    });
+
     // ─── Tools (16) ─────────────────────────────────────────────────────────────
     // Definitions and executors both come from core's unified tool module, so
     // openwave and the MCP server can never drift. Agent resolution stays here
@@ -870,7 +885,7 @@ export default definePluginEntry({
       const surface: core.Surface = sessionKey.startsWith("voice:") ? "voice" : "chat";
       let ctx = "";
       try {
-        ctx = await core.buildBootstrapContext(agentId, sessionId, config, log, surface);
+        ctx = await core.buildBootstrapContext(agentId, sessionId, config, log, surface, contextOptsFor(agentId));
         bootstrapCache.set(sessionId, ctx);
         log.info(logFields({ agentId, sessionId, op: "session_start.bootstrap", outcome: "ok", chars: ctx.length, surface, durationMs: Date.now() - t0 }));
       } catch (err) {
@@ -999,7 +1014,7 @@ export default definePluginEntry({
       // Layer 1: self-model header (every turn, never compacted).
       let selfModelHeader = "";
       try {
-        selfModelHeader = await core.buildSelfModelHeader(agentId, config, log, surface);
+        selfModelHeader = await core.buildSelfModelHeader(agentId, config, log, surface, contextOptsFor(agentId));
       } catch (err) {
         log.warn(logFields({ agentId, sessionId, op: "selfModelHeader", outcome: "error", error: String(err) }));
         selfModelHeader = core.BRAIN_HEADER;
@@ -1018,7 +1033,7 @@ export default definePluginEntry({
           bootstrapInjected.add(sessionId);
         } else {
           try {
-            const bootstrapCtx = await core.buildBootstrapContext(agentId, sessionId, config, log, surface);
+            const bootstrapCtx = await core.buildBootstrapContext(agentId, sessionId, config, log, surface, contextOptsFor(agentId));
             parts.push(bootstrapCtx);
             bootstrapInjected.add(sessionId);
           } catch (err) {
@@ -1137,7 +1152,7 @@ export default definePluginEntry({
       const agentId = resolveAgentId(undefined, hookCtx, config.agents);
       if (!config.agents.includes(agentId)) return;
       try {
-        const header = await core.buildSelfModelHeader(agentId, config, log);
+        const header = await core.buildSelfModelHeader(agentId, config, log, "chat", contextOptsFor(agentId));
         if (header) return { appendContext: header };
       } catch (err) {
         log.warn(logFields({ agentId, op: "heartbeat_prompt_contribution", outcome: "error", error: String(err) }));
