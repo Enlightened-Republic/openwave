@@ -182,7 +182,7 @@ type OpenClawPluginApi = {
     };
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  registerTool: (tool: any) => void;
+  registerTool: (tool: any, opts?: { name?: string; optional?: boolean }) => void;
   registerMemoryEmbeddingProvider?: (adapter: {
     id: string;
     defaultModel?: string;
@@ -574,23 +574,48 @@ export default definePluginEntry({
     // openwave and the MCP server can never drift. Agent resolution stays here
     // (it is a transport concern); `"openwave"` is the provenance stamped on
     // nodes written through brain_write / brain_supersede.
-    const tools = OPENWAVE_TOOL_NAMES.map((name) => ({
-      name,
-      description: BRAIN_TOOL_DEFS[name]!.description,
-      parameters: BRAIN_TOOL_DEFS[name]!.inputSchema,
-      execute: (args: Record<string, unknown> | undefined, ctx: unknown) =>
-        dispatchBrainTool(
-          name,
-          resolveAgentId(args, ctx, config.agents),
-          args ?? {},
-          config,
-          "openwave",
-        ).then((r) => r.text),
-    }));
+    //
+    // Registration contract (docs/plugins/building-plugins.md; OpenClawPluginToolContext and
+    // registerTool's execute() in the SDK types): registerTool takes a per-run FACTORY that
+    // receives { agentId, sessionKey, sessionId, ... } and returns the tool, whose handler is
+    // execute(toolCallId, params, signal, onUpdate, ctx) and returns { content: [{type:"text",text}] }.
+    // Earlier versions declared execute(args, ctx), so the tool-call id string arrived as the
+    // "arguments" and every parameterized tool failed (brain_docs saw section "").
+    const textResult = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
-    for (const tool of tools) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      api.registerTool(tool as any);
+    // Identify the CALLER explicitly. core.agentIdFromKey falls back to the first configured
+    // agent, which would silently read/write main's brain for an unknown caller, so it is not
+    // used here: an unidentifiable or unserved caller is refused instead.
+    type ToolContextLike = { agentId?: string; sessionKey?: string; sessionId?: string } | undefined;
+    const resolveToolAgent = (tc: ToolContextLike): { agentId: string } | { error: string } => {
+      let candidate = tc?.agentId;
+      if (!candidate) {
+        for (const key of [tc?.sessionId, tc?.sessionKey]) {
+          const mapped = key ? sessionAgentMap.get(key) : undefined;
+          if (mapped) { candidate = mapped; break; }
+        }
+      }
+      if (!candidate && tc?.sessionKey?.startsWith("agent:")) candidate = tc.sessionKey.split(":")[1];
+      if (!candidate) return { error: "openwave: cannot determine which agent is calling this tool, so it refused to touch any brain." };
+      if (!config.agents.includes(candidate)) return { error: `openwave is not serving agent "${candidate}" (plugins.entries.openwave.config.agents), so it refused to touch its brain.` };
+      return { agentId: candidate };
+    };
+
+    for (const name of OPENWAVE_TOOL_NAMES) {
+      api.registerTool(
+        (toolContext: ToolContextLike) => ({
+          name,
+          description: BRAIN_TOOL_DEFS[name]!.description,
+          parameters: BRAIN_TOOL_DEFS[name]!.inputSchema,
+          async execute(_toolCallId: string, params: Record<string, unknown> | undefined) {
+            const who = resolveToolAgent(toolContext);
+            if ("error" in who) return textResult(who.error);
+            const r = await dispatchBrainTool(name, who.agentId, params ?? {}, config, "openwave");
+            return textResult(r.text);
+          },
+        }),
+        { name },
+      );
     }
 
     // ─── Memory adapters (additive — does NOT register exclusive memory capability) ───────
@@ -1315,7 +1340,7 @@ export default definePluginEntry({
       op: "register",
       outcome: "ok",
       agents: config.agents.length,
-      tools: tools.length,
+      tools: OPENWAVE_TOOL_NAMES.length,
       engine: "sharpwave-core",
       // LLM-route diagnostics (booleans/model-id only, never key material):
       // added 2026-07-13 when REM fell back to keyword mode despite the nvidia
