@@ -23,6 +23,7 @@
   "files": [
     "dist/index.js",
     "dist/control-ui",
+    "brain-docs",
     "openclaw.plugin.json",
     "README.md",
     "LICENSE"
