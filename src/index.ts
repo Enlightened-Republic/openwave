@@ -21,6 +21,7 @@ import {
   dispatchBrainTool,
 } from "sharpwave-core";
 import { decideBootstrapDelivery, bootstrapIdempotencyKey } from "./bootstrap-delivery.js";
+import { capImportance, classifyOrigin, readOwnerAllowFrom } from "./provenance.js";
 import { hasExternalMemoryCoreWorkspace } from "./memory-detection.js";
 import {
   armSchedulers,
@@ -215,6 +216,9 @@ const bootstrapInjected = new core.BoundedTtlSet(MAX_CACHE_ENTRIES, CACHE_TTL_MS
 // queued the bootstrap. Drained by before_prompt_build on turn 1 to prevent
 // double-injection (queue delivery + cache fallback both firing).
 const queuedSessions = new core.BoundedTtlSet(MAX_CACHE_ENTRIES, CACHE_TTL_MS);
+// Set once the "no owner list" provenance warning has been logged (per process).
+let warnedNoOwnerList = false;
+
 // Tracks sessions this runtime generation has seen, so lifecycle cleanup can
 // drop their per-session state.
 const knownSessions = new Set<string>();
@@ -1186,7 +1190,7 @@ export default definePluginEntry({
     }, { priority: 0, timeoutMs: 300 });
 
     // message_received
-    api.on("message_received", async (event: { content?: string; text?: string; sessionKey?: string; agentId?: string }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string }) => {
+    api.on("message_received", async (event: { content?: string; text?: string; sessionKey?: string; agentId?: string; senderId?: string; from?: string }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string; channelId?: string }) => {
       const agentId = resolveAgentId(event, hookCtx, config.agents);
       if (!config.agents.includes(agentId)) return;
 
@@ -1203,7 +1207,21 @@ export default definePluginEntry({
       // openclaw-2026-07-12.log): `agent:<id>:cron:<uuid>:run:<ts>`. The bare
       // "cron:" prefix is kept as belt-and-braces for older gateways.
       const isCronSession = /^agent:[^:]+:cron:/.test(sessionKey) || sessionKey.startsWith("cron:");
-      const importance = isCronSession ? 0.1 : core.scoreImportance("user", content);
+      // Provenance gate (research §5.4): importance is scored from text alone, so only the owner may
+      // reach the extraction (>= llmExtractionMinImportance) and dopamine-spike (>= 0.8) thresholds.
+      // With no owner list configured the sender cannot be classified, so the gate stays off rather
+      // than silently stopping all extraction (warned once below).
+      const ownerAllowFrom = readOwnerAllowFrom(api.runtime?.config?.current?.());
+      const origin = classifyOrigin(
+        { channelId: hookCtx?.channelId, senderId: event?.senderId, from: event?.from, sessionKey },
+        ownerAllowFrom,
+      );
+      if (ownerAllowFrom.length === 0 && !warnedNoOwnerList) {
+        warnedNoOwnerList = true;
+        log.warn(logFields({ op: "provenance_gate", outcome: "inactive", note: "commands.ownerAllowFrom is empty; inbound importance is not capped by sender" }));
+      }
+      const scored = isCronSession ? 0.1 : core.scoreImportance("user", content);
+      const importance = ownerAllowFrom.length === 0 ? scored : capImportance(origin, scored, config.llmExtractionMinImportance);
       let episodeId = "";
       try {
         episodeId = core.appendEpisode(agentId, sessionKey, "user", content, importance);
@@ -1211,7 +1229,7 @@ export default definePluginEntry({
         log.warn(logFields({ agentId, sessionId, op: "message_received.episode", outcome: "error", error: String(err) }));
         return;
       }
-      log.info(logFields({ agentId, sessionId, op: "message_received", outcome: "ok", importance, isCronSession }));
+      log.info(logFields({ agentId, sessionId, op: "message_received", outcome: "ok", importance, isCronSession, origin, ...(importance < scored ? { cappedFrom: scored } : {}) }));
 
       if (config.llmExtractionEnabled && importance >= config.llmExtractionMinImportance) {
         core.queueEpisodeForExtraction(agentId, {
