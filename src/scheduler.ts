@@ -22,6 +22,11 @@ type Logger = {
   debug?: (msg: string) => void;
 };
 
+/** Optional per-agent work run at the start of every hourly/initial maintenance tick. */
+export type SchedulerHooks = {
+  beforeMaintenance?: (agentId: string) => void;
+};
+
 export type SchedulerHandles = {
   replay: NodeJS.Timeout | null;
   consolidation: NodeJS.Timeout | null;
@@ -124,6 +129,7 @@ function runSleepMaintenance(
   config: core.BrainConfig,
   log: Logger,
   trigger: string,
+  hooks?: SchedulerHooks,
 ): void {
   for (const agentId of agentIds) {
     if (consolidatingAgents.has(agentId)) {
@@ -132,6 +138,11 @@ function runSleepMaintenance(
     }
     consolidatingAgents.add(agentId);
     void (async () => {
+      try {
+        hooks?.beforeMaintenance?.(agentId);
+      } catch (err) {
+        log.warn(logFields({ agentId, op: "sleep_system.before_maintenance", outcome: "error", error: String(err) }));
+      }
       try {
         await harvestExtraction(agentId, "sleep_system", config, log);
       } catch (err) {
@@ -164,6 +175,7 @@ export function armSchedulers(
   agentIds: string[],
   config: core.BrainConfig,
   log: Logger,
+  hooks?: SchedulerHooks,
 ): SchedulerHandles {
   const agents = agentIds.slice();
 
@@ -178,14 +190,14 @@ export function armSchedulers(
 
   // Hourly maintenance: extraction harvest + consolidation gate.
   const consolidation = setInterval(
-    () => runSleepMaintenance(agents, config, log, "hourly"),
+    () => runSleepMaintenance(agents, config, log, "hourly", hooks),
     MAINTENANCE_INTERVAL_MS,
   );
 
   // Initial check shortly after boot: consolidation debt accumulated while the
   // gateway was down gets processed within minutes instead of waiting an hour.
   const initialConsolidation = setTimeout(
-    () => runSleepMaintenance(agents, config, log, "initial"),
+    () => runSleepMaintenance(agents, config, log, "initial", hooks),
     INITIAL_CONSOLIDATION_DELAY_MS,
   );
 

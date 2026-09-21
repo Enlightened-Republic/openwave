@@ -21,6 +21,7 @@ import {
   dispatchBrainTool,
 } from "sharpwave-core";
 import { decideBootstrapDelivery, bootstrapIdempotencyKey } from "./bootstrap-delivery.js";
+import { ingestHostMemory } from "./host-memory.js";
 import { capImportance, classifyOrigin, readOwnerAllowFrom } from "./provenance.js";
 import { hasExternalMemoryCoreWorkspace } from "./memory-detection.js";
 import {
@@ -47,6 +48,9 @@ type OpenwaveConfig = core.BrainConfig & {
   // keys inherit the flat value above. See settings-contract.ts for the
   // field list and openclaw.plugin.json for the persisted schema.
   personaOverrides?: Record<string, PersonaOverrideFields>;
+  // Mirror each agent's host MEMORY.md into its graph on the hourly tick (read-only; see
+  // host-memory.ts). Default off: recalled facts can repeat what the bootstrap already shows.
+  ingestHostMemory?: boolean;
 };
 
 const DEFAULT_OPENWAVE_CONFIG: OpenwaveConfig = {
@@ -837,7 +841,19 @@ export default definePluginEntry({
       // at +5m). Held at module level so gateway_stop and lifecycle cleanup can
       // release them for the old runtime generation.
       disarmSchedulers(schedulerHandles);
-      schedulerHandles = armSchedulers(config.agents, config, log);
+      schedulerHandles = armSchedulers(
+        config.agents,
+        config,
+        log,
+        config.ingestHostMemory === true
+          ? {
+              beforeMaintenance: (agentId) => {
+                const dir = api.runtime?.agent?.resolveAgentWorkspaceDir?.(api.runtime?.config?.current?.(), agentId);
+                if (dir) ingestHostMemory(agentId, dir, log);
+              },
+            }
+          : undefined,
+      );
 
       log.info(logFields({ op: "gateway_start", outcome: "ready", durationMs: Date.now() - t0 }));
     });

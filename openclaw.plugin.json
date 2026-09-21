@@ -127,6 +127,10 @@
         "type": "string",
         "default": ""
       },
+      "ingestHostMemory": {
+        "type": "boolean",
+        "default": false
+      },
       "personaOverrides": {
         "type": "object",
         "additionalProperties": {
