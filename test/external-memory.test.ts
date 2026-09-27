@@ -108,3 +108,16 @@ test("older host without runtime.agent -> fails closed: goals still injected, no
   await fire("session_start", { ...ctx }, ctx);
   expect(rec.injections[0].text).toContain(BOOTSTRAP_GOALS);
 });
+
+test("curatedTierDedupe=false keeps goals even when host MEMORY.md is curated (Engram Graft A opt-out)", async () => {
+  const mock = makeMockApi(
+    { enabled: true, config: { agents: [AGENT], curatedTierDedupe: false } },
+    { workspaceDir: workspace({ "MEMORY.md": "# Memory\n- curated\n" }) },
+  );
+  plugin.register(mock.api as never);
+  core.writeNode(AGENT, "goal", LABEL, "Ship the external-memory wiring.", { importance: 0.95 });
+  const ctx = sessionCtx();
+
+  await mock.fire("session_start", { ...ctx }, ctx);
+  expect(mock.rec.injections[0].text).toContain(BOOTSTRAP_GOALS);
+});
