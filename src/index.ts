@@ -22,13 +22,18 @@ import {
 } from "sharpwave-core";
 import { decideBootstrapDelivery, bootstrapIdempotencyKey } from "./bootstrap-delivery.js";
 import { capImportance, classifyOrigin, readOwnerAllowFrom } from "./provenance.js";
-import { hasExternalMemoryCoreWorkspace } from "./memory-detection.js";
 import {
   armSchedulers,
   disarmSchedulers,
   harvestExtraction,
   type SchedulerHandles,
 } from "./scheduler.js";
+import {
+  assemblyOptsFor,
+  ensureConsolidationCron,
+  maybeRunConsolidationFromCronEvent,
+  CONSOLIDATION_CRON_ID,
+} from "./engram-graft.js";
 import { OPENWAVE_SETTINGS_CONTRACT, type PersonaOverrideFields } from "./settings-contract.js";
 
 // ─── Config ────────────────────────────────────────────────────────────────────
@@ -47,6 +52,12 @@ type OpenwaveConfig = core.BrainConfig & {
   // keys inherit the flat value above. See settings-contract.ts for the
   // field list and openclaw.plugin.json for the persisted schema.
   personaOverrides?: Record<string, PersonaOverrideFields>;
+  /** When true (default), omit host-curated durable identity/goals when MEMORY.md/USER.md present (Engram Graft A). */
+  curatedTierDedupe?: boolean;
+  /** Host cron expr for LLM consolidation (Engram Graft B). Default staggered after memory-core dreaming. */
+  consolidationCron?: string;
+  /** When false, skip registering the openwave:consolidation host cron. Default true. */
+  consolidationCronEnabled?: boolean;
 };
 
 const DEFAULT_OPENWAVE_CONFIG: OpenwaveConfig = {
@@ -54,6 +65,9 @@ const DEFAULT_OPENWAVE_CONFIG: OpenwaveConfig = {
   enabled: true,
   agents: ["main"],
   personaOverrides: {},
+  curatedTierDedupe: true,
+  consolidationCron: "30 4 * * *",
+  consolidationCronEnabled: true,
 };
 
 // ─── Plugin entry point ────────────────────────────────────────────────────────
@@ -289,10 +303,12 @@ const CRON_JOB_IDS = {
   sws: "clawbrain-v4:sws",
   rem: "clawbrain-v4:rem",
   awakeReplay: "clawbrain-v4:awake-replay",
+  /** Engram Graft B: host cron for LLM consolidation (staggered vs memory-core 0 3 * * *). Not legacy. */
+  consolidation: CONSOLIDATION_CRON_ID,
 };
 
-// In-process sleep-system timers (awake-replay 30m, consolidation gate 60m,
-// embedding sweep 10m + a one-shot post-boot consolidation kick). Armed in
+// In-process sleep-system timers (awake-replay 30m, extraction harvest 60m,
+// embedding sweep 10m; LLM consolidation is host-cron driven). Armed in
 // gateway_start, released in gateway_stop and on every lifecycle cleanup reason
 // (the timers belong to the old runtime generation regardless of reason).
 // Module-level so gateway_stop and the lifecycle handler can both reach it.
@@ -519,7 +535,12 @@ async function removeLegacyCronJobs(
 ): Promise<void> {
   try {
     const existing = await cron.list({ includeDisabled: true });
-    const legacyNames = new Set<string>(Object.values(CRON_JOB_IDS));
+    // Only the pre-2026-07-12 clawbrain-v4:* jobs, never openwave:consolidation.
+    const legacyNames = new Set<string>([
+      CRON_JOB_IDS.sws,
+      CRON_JOB_IDS.rem,
+      CRON_JOB_IDS.awakeReplay,
+    ]);
     for (const job of existing) {
       const matches = (job?.id && legacyNames.has(job.id)) || (job?.name && legacyNames.has(job.name));
       if (!matches) continue;
@@ -565,13 +586,13 @@ export default definePluginEntry({
     }
 
     // When the host already curates MEMORY.md/USER.md (OpenClaw memory-core) for an
-    // agent, that tier owns goals: tell sharpwave-core to skip its goals block so the
-    // agent isn't handed two copies. Presence check only, evaluated per call so a
-    // MEMORY.md curated mid-run takes effect without a restart; fails closed (false =
-    // inject as usual) on older hosts. See memory-detection.ts.
-    const contextOptsFor = (agentId: string): { externalMemoryActive: boolean } => ({
-      externalMemoryActive: hasExternalMemoryCoreWorkspace(api, api.runtime?.config?.current?.(), agentId),
-    });
+    // agent, that tier owns durable identity/goals: tell sharpwave-core to skip them so
+    // the agent isn't handed two copies (Engram Graft A widens this in sharpwave-core).
+    // Presence check only, evaluated per call so a MEMORY.md curated mid-run takes
+    // effect without a restart; fails closed (false = inject as usual) on older hosts.
+    // `curatedTierDedupe: false` turns it off. See engram-graft.ts / memory-detection.ts.
+    const contextOptsFor = (agentId: string): { externalMemoryActive: boolean } =>
+      assemblyOptsFor(api, config, agentId, api.runtime?.config?.current?.());
 
     // ─── Tools (16) ─────────────────────────────────────────────────────────────
     // Definitions and executors both come from core's unified tool module, so
@@ -790,14 +811,16 @@ export default definePluginEntry({
       log.warn(logFields({ op: "registerRuntimeLifecycle", outcome: "error", error: String(err) }));
     }
 
-    // Extraction harvest (shared: session_end + the hourly sleep-system tick)
-    // now lives in scheduler.ts as `harvestExtraction(agentId, opPrefix, config,
-    // log)`. session_end calls it directly; the scheduler drives the hourly run.
+    // Extraction harvest (shared: session_end + the hourly in-process harvest
+    // timer + the host-cron consolidation pass) lives in scheduler.ts as
+    // `harvestExtraction(agentId, opPrefix, config, log)`. session_end calls it
+    // directly; the scheduler drives the hourly run.
 
     // ─── Hooks ────────────────────────────────────────────────────────────────
 
-    // gateway_start: init DBs, remove legacy cron jobs, arm the in-process
-    // sleep-system timers (scheduler.ts).
+    // gateway_start: init DBs, remove legacy cron jobs, register the
+    // openwave:consolidation host cron, arm the in-process sleep-system timers
+    // (scheduler.ts).
     api.on("gateway_start", async (_event: unknown, ctx: { getCron?: () => CronService | undefined }) => {
       const t0 = Date.now();
       log.info(logFields({ op: "gateway_start", outcome: "start" }));
@@ -827,14 +850,19 @@ export default definePluginEntry({
         const cron = ctx?.getCron?.();
         if (cron) {
           await removeLegacyCronJobs(cron, log);
+          // Engram Graft B: register the host cron for LLM consolidation. Still
+          // registered when dreaming is disabled; openwave owns this cadence.
+          await ensureConsolidationCron(cron, config, log);
+        } else {
+          log.warn(logFields({ op: "cron.consolidation", outcome: "skipped", reason: "no_cron_service" }));
         }
       } catch (err) {
         log.warn(logFields({ op: "cron.remove_legacy", outcome: "error", error: String(err) }));
       }
 
-      // Arm the in-process sleep-system timers (awake-replay 30m, consolidation
-      // gate 60m, embedding sweep 10m + a one-shot post-boot consolidation kick
-      // at +5m). Held at module level so gateway_stop and lifecycle cleanup can
+      // Arm the in-process sleep-system timers (awake-replay 30m, extraction
+      // harvest 60m, embedding sweep 10m). LLM consolidation is host-cron only
+      // (Graft B). Held at module level so gateway_stop and lifecycle cleanup can
       // release them for the old runtime generation.
       disarmSchedulers(schedulerHandles);
       schedulerHandles = armSchedulers(config.agents, config, log);
@@ -854,32 +882,37 @@ export default definePluginEntry({
       log.info(logFields({ op: "gateway_stop", outcome: "ok", durationMs: Date.now() - t0 }));
     });
 
-    // cron_changed: observer that logs job state.
+    // cron_changed: logs legacy job state; openwave:consolidation firing runs
+    // the consolidation pass in-process (Engram Graft B).
     api.on("cron_changed", async (event: {
       action?: string;
       jobId?: string;
+      jobName?: string;
       status?: string;
       error?: string;
       summary?: string;
       durationMs?: number;
       nextRunAtMs?: number;
     }) => {
-      const isOurs =
-        event.jobId === CRON_JOB_IDS.sws ||
-        event.jobId === CRON_JOB_IDS.rem ||
-        event.jobId === CRON_JOB_IDS.awakeReplay;
-      if (!isOurs) return;
-
-      log.info(
-        logFields({
-          op: "cron_changed",
-          outcome: event.status ?? event.action ?? "unknown",
-          jobName: event.jobId,
-          durationMs: event.durationMs,
-          nextRunAtMs: event.nextRunAtMs,
-          error: event.error,
-        }),
-      );
+      const jobKey = event.jobId ?? event.jobName ?? "";
+      const isLegacy =
+        jobKey === CRON_JOB_IDS.sws ||
+        jobKey === CRON_JOB_IDS.rem ||
+        jobKey === CRON_JOB_IDS.awakeReplay;
+      if (isLegacy) {
+        log.info(
+          logFields({
+            op: "cron_changed",
+            outcome: event.status ?? event.action ?? "unknown",
+            jobName: jobKey,
+            durationMs: event.durationMs,
+            nextRunAtMs: event.nextRunAtMs,
+            error: event.error,
+          }),
+        );
+        return;
+      }
+      maybeRunConsolidationFromCronEvent(event, config.agents, config, log);
     });
 
     // session_start: warm bootstrap cache + queue first-turn injection (T2.2 Layer 2)
