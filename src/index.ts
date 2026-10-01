@@ -35,6 +35,16 @@ import {
   CONSOLIDATION_CRON_ID,
 } from "./engram-graft.js";
 import { OPENWAVE_SETTINGS_CONTRACT, type PersonaOverrideFields } from "./settings-contract.js";
+import {
+  DEFAULT_BRAIN_URL,
+  DEFAULT_REMOTE_TIMEOUT_MS,
+  loadToken,
+  resolveBrainMode,
+  resolveRemoteSettings,
+  type RemoteConfigFields,
+} from "./remote/settings.js";
+import { registerRemoteMode, type RemoteRuntime } from "./remote/register.js";
+import type { BrainConnectionInfo } from "./settings-contract.js";
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 //
@@ -42,7 +52,7 @@ import { OPENWAVE_SETTINGS_CONTRACT, type PersonaOverrideFields } from "./settin
 // concerns (the MCP server pins one agent per process; openwave serves many).
 // They stay in openwave's own config type rather than being pushed into core.
 
-type OpenwaveConfig = core.BrainConfig & {
+type OpenwaveConfig = core.BrainConfig & RemoteConfigFields & {
   enabled: boolean;
   agents: string[];
   // Per-agent-id overrides for the flat tunables below, keyed by OpenClaw
@@ -68,6 +78,11 @@ const DEFAULT_OPENWAVE_CONFIG: OpenwaveConfig = {
   curatedTierDedupe: true,
   consolidationCron: "30 4 * * *",
   consolidationCronEnabled: true,
+  // Remote brain mode (src/remote/). "local" keeps every existing install unchanged.
+  brainMode: "local",
+  brainUrl: DEFAULT_BRAIN_URL,
+  sharedRecall: true,
+  remoteTimeoutMs: DEFAULT_REMOTE_TIMEOUT_MS,
 };
 
 // ─── Plugin entry point ────────────────────────────────────────────────────────
@@ -155,7 +170,7 @@ type ConfigMutationApi = {
   }) => Promise<{ afterWrite: unknown; followUp: unknown }>;
 };
 
-type OpenClawPluginApi = {
+export type OpenClawPluginApi = {
   pluginConfig?: Record<string, unknown>;
   logger?: { debug?: (msg: string) => void; info: (msg: string) => void; warn: (msg: string) => void; error?: (msg: string) => void };
   runtime?: {
@@ -314,6 +329,13 @@ const CRON_JOB_IDS = {
 // Module-level so gateway_stop and the lifecycle handler can both reach it.
 let schedulerHandles: SchedulerHandles | null = null;
 
+// Remote brain mode runtime (brainMode: "remote"); null in local mode. Exposed
+// for tests via __remoteRuntimeForTests.
+let remoteRuntime: RemoteRuntime | null = null;
+export function __remoteRuntimeForTests(): RemoteRuntime | null {
+  return remoteRuntime;
+}
+
 // ── Structured logger helper (Tier 3 T3.8) ─────────────────────────────────────
 type StructuredFields = Record<string, string | number | boolean | undefined>;
 function logFields(fields: StructuredFields): string {
@@ -393,6 +415,7 @@ function registerPersonaSettingsFeature(
   api: OpenClawPluginApi,
   config: OpenwaveConfig,
   log: { info: (msg: string) => void; warn: (msg: string) => void },
+  brainConnection?: () => BrainConnectionInfo,
 ): void {
   const registerSessionAction = api.session.controls?.registerSessionAction;
   const mutateConfigFile = api.runtime?.config?.mutateConfigFile;
@@ -504,7 +527,30 @@ function registerPersonaSettingsFeature(
     },
   });
 
-  log.info(logFields({ op: "registerPersonaSettingsFeature", outcome: "ok", operations: 3 }));
+  // Read-only brain connection view (local | remote). Never includes the token.
+  registerSessionAction({
+    id: "getBrainConnection",
+    description: OPENWAVE_SETTINGS_CONTRACT.operations.getBrainConnection.description,
+    schema: OPENWAVE_SETTINGS_CONTRACT.operations.getBrainConnection.input,
+    requiredScopes: ["operator.read"],
+    handler() {
+      if (brainConnection) return { ok: true, result: brainConnection() };
+      const s = resolveRemoteSettings(config);
+      const tok = loadToken(config, config.agents[0] ?? "main");
+      const info: BrainConnectionInfo = {
+        brainMode: "local",
+        brainUrl: s.url,
+        sharedRecall: s.sharedRecall,
+        remoteTimeoutMs: s.timeoutMs,
+        tokenSource: tok.source,
+        status: "local",
+        disabledInRemoteMode: [],
+      };
+      return { ok: true, result: info };
+    },
+  });
+
+  log.info(logFields({ op: "registerPersonaSettingsFeature", outcome: "ok", operations: 4 }));
 }
 
 // ── Cron job registration helper ───────────────────────────────────────────────
@@ -625,6 +671,30 @@ export default definePluginEntry({
       if (!config.agents.includes(candidate)) return { error: `openwave is not serving agent "${candidate}" (plugins.entries.openwave.config.agents), so it refused to touch its brain.` };
       return { agentId: candidate };
     };
+
+    // ─── Remote brain mode ──────────────────────────────────────────────────────
+    // brainMode: "remote" → the SharpWave brain service owns storage and sleep.
+    // Hand off to src/remote/register.ts and return BEFORE any local wiring, so
+    // no local brain.db is opened, no local timers are armed, and the
+    // openwave:consolidation host cron is never registered.
+    if (resolveBrainMode(config) === "remote") {
+      const rt = registerRemoteMode(api, config, log, {
+        resolveToolAgent,
+        resolveAgentId: (event, hookCtx) => resolveAgentId(event, hookCtx, config.agents),
+        recordSessionAgent,
+        clearSessionAgent,
+        contextOptsFor,
+        stripControlDirectives,
+      });
+      remoteRuntime = rt;
+      try {
+        registerPersonaSettingsFeature(api, config, log, () => rt.connectionInfo());
+      } catch (err) {
+        log.warn(logFields({ op: "registerPersonaSettingsFeature", outcome: "error", error: String(err) }));
+      }
+      return;
+    }
+    remoteRuntime = null;
 
     for (const name of OPENWAVE_TOOL_NAMES) {
       api.registerTool(
