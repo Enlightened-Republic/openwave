@@ -199,10 +199,59 @@
         },
         "default": {},
         "description": "Per-agent-id overrides layered over the flat config above, keyed by OpenClaw agent id (e.g. \"mila\"). Mirrors the agents.entries.<id> override idiom (docs/gateway/config-agents/entries-and-multi-agent.md) applied to openwave's own config. Missing keys inherit the flat value above; emotionalProfile fields are accepted ahead of the engine work that will consume them."
+      },
+      "brainMode": {
+        "type": "string",
+        "enum": [
+          "local",
+          "remote"
+        ],
+        "default": "local",
+        "description": "local (default): open ~/.sharpwave/<agent>/brain.db in-process, exactly as before. remote: use the SharpWave brain service (sharpwave-server) over MCP Streamable HTTP at brainUrl; no local brain.db is opened, and local sleep, the openwave:consolidation host cron and the hourly local harvest are disabled (the service owns sleep)."
+      },
+      "brainUrl": {
+        "type": "string",
+        "default": "http://127.0.0.1:18790",
+        "description": "Remote mode: base URL of the brain service (MCP endpoint is <brainUrl>/mcp, health is <brainUrl>/health)."
+      },
+      "brainTokenFile": {
+        "type": "string",
+        "description": "Remote mode (preferred): path to a file containing the per-agent bearer token minted by `sharpwave-server token mint`. `~` and `{agentId}` are expanded, so one entry can serve several agents (e.g. ~/.sharpwave/tokens/{agentId}.token). Takes precedence over $OPENWAVE_BRAIN_TOKEN and brainToken."
+      },
+      "brainToken": {
+        "type": "string",
+        "description": "Remote mode (discouraged): inline bearer token. Prefer brainTokenFile or the OPENWAVE_BRAIN_TOKEN env var so the secret is not stored in openclaw.json. Never logged."
+      },
+      "sharedRecall": {
+        "type": "boolean",
+        "default": true,
+        "description": "Remote mode: include the shared brain (visibility shared) in per-turn recall alongside the agent private brain."
+      },
+      "remoteTimeoutMs": {
+        "type": "number",
+        "default": 2500,
+        "minimum": 100,
+        "maximum": 30000,
+        "description": "Remote mode: per-call budget for the brain service. If the service does not answer in time the turn proceeds with no recall injected."
       }
     }
   },
   "controlUi": {
     "entry": "dist/control-ui/c70aba5da3775a85/index.js"
+  },
+  "uiHints": {
+    "brainToken": {
+      "label": "Brain service token",
+      "help": "Prefer brainTokenFile or $OPENWAVE_BRAIN_TOKEN",
+      "sensitive": true
+    },
+    "brainTokenFile": {
+      "label": "Brain service token file",
+      "placeholder": "~/.sharpwave/tokens/{agentId}.token"
+    },
+    "brainUrl": {
+      "label": "Brain service URL",
+      "placeholder": "http://127.0.0.1:18790"
+    }
   }
 }

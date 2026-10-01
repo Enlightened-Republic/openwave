@@ -35,6 +35,7 @@ import {
   CONSOLIDATION_CRON_ID,
 } from "./engram-graft.js";
 import { OPENWAVE_SETTINGS_CONTRACT, type PersonaOverrideFields } from "./settings-contract.js";
+import { DEFAULT_BRAIN_URL, DEFAULT_REMOTE_TIMEOUT_MS, type RemoteConfigFields } from "./remote/settings.js";
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 //
@@ -42,7 +43,7 @@ import { OPENWAVE_SETTINGS_CONTRACT, type PersonaOverrideFields } from "./settin
 // concerns (the MCP server pins one agent per process; openwave serves many).
 // They stay in openwave's own config type rather than being pushed into core.
 
-type OpenwaveConfig = core.BrainConfig & {
+type OpenwaveConfig = core.BrainConfig & RemoteConfigFields & {
   enabled: boolean;
   agents: string[];
   // Per-agent-id overrides for the flat tunables below, keyed by OpenClaw
@@ -68,6 +69,11 @@ const DEFAULT_OPENWAVE_CONFIG: OpenwaveConfig = {
   curatedTierDedupe: true,
   consolidationCron: "30 4 * * *",
   consolidationCronEnabled: true,
+  // Remote brain mode (src/remote/). "local" keeps every existing install unchanged.
+  brainMode: "local",
+  brainUrl: DEFAULT_BRAIN_URL,
+  sharedRecall: true,
+  remoteTimeoutMs: DEFAULT_REMOTE_TIMEOUT_MS,
 };
 
 // ─── Plugin entry point ────────────────────────────────────────────────────────

@@ -68,6 +68,30 @@ const ClearPersonaOverrideInput = Type.Object({
   field: Type.Optional(Type.String({ minLength: 1 })),
 });
 
+// Remote brain mode (brainMode: "remote"). Read-only view of the connection
+// settings and the last health/auth result. NEVER carries the token itself,
+// only where it came from.
+export const BRAIN_MODES = ["local", "remote"] as const;
+const GetBrainConnectionInput = Type.Object({});
+const GetBrainConnectionOutput = Type.Object({
+  brainMode: Type.Union([Type.Literal("local"), Type.Literal("remote")]),
+  brainUrl: Type.String(),
+  sharedRecall: Type.Boolean(),
+  remoteTimeoutMs: Type.Number(),
+  tokenSource: Type.Union([Type.Literal("file"), Type.Literal("env"), Type.Literal("inline"), Type.Literal("none")]),
+  status: Type.Union([
+    Type.Literal("local"),
+    Type.Literal("unknown"),
+    Type.Literal("ok"),
+    Type.Literal("unreachable"),
+    Type.Literal("unauthorized"),
+    Type.Literal("misconfigured"),
+  ]),
+  lastError: Type.Optional(Type.String()),
+  disabledInRemoteMode: Type.Array(Type.String()),
+});
+export type BrainConnectionInfo = Static<typeof GetBrainConnectionOutput>;
+
 export const OPENWAVE_SETTINGS_CONTRACT = {
   pluginId: "openwave",
   operations: {
@@ -88,6 +112,12 @@ export const OPENWAVE_SETTINGS_CONTRACT = {
       description: "Remove one field (or the whole override) for an agent, reverting it to the flat default.",
       input: ClearPersonaOverrideInput,
       output: GetPersonaConfigOutput,
+    },
+    getBrainConnection: {
+      kind: "query",
+      description: "Read openwave's brain mode (local | remote), the remote brain service URL, token source (never the token), and last health/auth status.",
+      input: GetBrainConnectionInput,
+      output: GetBrainConnectionOutput,
     },
   },
   events: {},
