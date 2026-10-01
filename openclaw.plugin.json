@@ -237,7 +237,7 @@
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/db463db37b19ff2a/index.js"
+    "entry": "dist/control-ui/7c458a31837123d0/index.js"
   },
   "uiHints": {
     "brainToken": {

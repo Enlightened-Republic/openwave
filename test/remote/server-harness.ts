@@ -48,18 +48,21 @@ export type RunningServer = {
   stop: () => Promise<void>;
 };
 
-export async function startServer(): Promise<RunningServer> {
+/** Optional second build (e.g. sharpwave main without brain_episode_append) to exercise the fallback path. */
+export const LEGACY_SERVER_CLI = process.env["SHARPWAVE_SERVER_CLI_LEGACY"] ? resolve(process.env["SHARPWAVE_SERVER_CLI_LEGACY"]) : null;
+
+export async function startServer(cli: string = SERVER_CLI): Promise<RunningServer> {
   const root = mkdtempSync(join(tmpdir(), "ow-remote-svc-"));
   const tokenDir = mkdtempSync(join(tmpdir(), "ow-remote-tok-"));
   const port = await freePort();
   const env = { ...process.env, OLLAMA_BASE_URL: "http://127.0.0.1:59999", SHARPWAVE_DATA_DIR: join(root, "unused-core-data") };
   delete (env as Record<string, string | undefined>)["OPENROUTER_API_KEY"];
   const mint = (agentId: string, scopes: Scope[] = ["read", "write"]) => {
-    const out = execFileSync(process.execPath, [SERVER_CLI, "token", "mint", "--root", root, "--agent", agentId, "--scopes", scopes.join(","), "--json"], { env, encoding: "utf8" });
+    const out = execFileSync(process.execPath, [cli, "token", "mint", "--root", root, "--agent", agentId, "--scopes", scopes.join(","), "--json"], { env, encoding: "utf8" });
     return (JSON.parse(out) as { token: string }).token;
   };
   let output = "";
-  const child: ChildProcess = spawn(process.execPath, [SERVER_CLI, "serve", "--root", root, "--port", String(port), "--tailnet-ip", "none", "--no-sleep", "--no-backup"], { env, stdio: ["ignore", "pipe", "pipe"] });
+  const child: ChildProcess = spawn(process.execPath, [cli, "serve", "--root", root, "--port", String(port), "--tailnet-ip", "none", "--no-sleep", "--no-backup"], { env, stdio: ["ignore", "pipe", "pipe"] });
   child.stdout!.on("data", (d) => { output += String(d); });
   child.stderr!.on("data", (d) => { output += String(d); });
   const url = `http://127.0.0.1:${port}`;

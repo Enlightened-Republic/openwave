@@ -192,12 +192,15 @@ settings action reports `status: "unauthorized"`.
 brain_supersede, brain_stats, brain_history, brain_expand, brain_review, brain_forget,
 brain_edges, brain_reset`) proxied 1:1; per-turn recall (private + shared) in the same
 `[BRAIN: on your mind …]` block with Graft A dedupe (identity/goal hits dropped when
-MEMORY.md/USER.md is curated); LLM-extraction facts written to the service on
+MEMORY.md/USER.md is curated); episode writes via `brain_episode_append` when the
+service advertises it (sharpwave-server ≥ `engram/server-episode-append`); LLM-extraction facts written to the service on
 `session_end` and hourly; the memory-corpus supplement.
 
 **Disabled in remote mode** (no service equivalent yet): local brain.db, in-process
 sleep timers (awake replay, hourly harvest-to-local, embedding sweep), the
-`openwave:consolidation` host cron (an existing one is removed), episode-log writes,
+`openwave:consolidation` host cron (an existing one is removed), episode-log writes
+*only if the service lacks `brain_episode_append`* (feature-detected from its tool list;
+with it, user/assistant turns plus session/compaction markers are appended remotely),
 the session bootstrap block, identity/goals/neuro header lines, the procedural-rules
 block, the last-24h activity block, proactive monitor / working memory / coactivations /
 dopamine, VALOR scoring, subconscious tick, compaction handling, temporal edges from

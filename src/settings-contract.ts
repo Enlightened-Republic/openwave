@@ -88,6 +88,8 @@ const GetBrainConnectionOutput = Type.Object({
     Type.Literal("misconfigured"),
   ]),
   lastError: Type.Optional(Type.String()),
+  /** Remote mode: whether the service advertises brain_episode_append (absent until detected). */
+  episodeAppend: Type.Optional(Type.Boolean()),
   disabledInRemoteMode: Type.Array(Type.String()),
 });
 export type BrainConnectionInfo = Static<typeof GetBrainConnectionOutput>;

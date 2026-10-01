@@ -76,6 +76,7 @@ export function classifyError(err: unknown, token?: string): RemoteBrainError {
 export class RemoteBrainClient {
   private client: Client | null = null;
   private connecting: Promise<Client> | null = null;
+  private cachedTools: Set<string> | null = null;
   private failures = 0;
   private downUntil = 0;
   private readonly now: () => number;
@@ -115,6 +116,8 @@ export class RemoteBrainClient {
   private async reset(): Promise<void> {
     const c = this.client;
     this.client = null;
+    // A reconnect may land on an upgraded/downgraded service: re-detect tools.
+    this.cachedTools = null;
     if (c) await c.close().catch(() => {});
   }
 
@@ -160,6 +163,36 @@ export class RemoteBrainClient {
     } catch (err) {
       const e = classifyError(err, this.opts.token);
       // Drop the connection on any transport failure so the next call re-initializes.
+      await this.reset();
+      this.noteFailure(e);
+      throw e;
+    }
+  }
+
+  /**
+   * Tool names the service advertises (MCP tools/list), cached per connection.
+   * Used to feature-detect optional tools (e.g. brain_episode_append) so a
+   * newer openwave degrades cleanly against an older service. Rejects with
+   * RemoteBrainError like callTool.
+   */
+  async toolNames(): Promise<Set<string>> {
+    if (this.cachedTools) return this.cachedTools;
+    if (this.inBackoff()) {
+      throw new RemoteBrainError("unreachable", "brain service marked down; retrying after backoff");
+    }
+    const started = this.now();
+    try {
+      const run = async () => {
+        const client = await this.connect();
+        const remaining = Math.max(50, this.opts.timeoutMs - (this.now() - started));
+        return client.listTools(undefined, { timeout: remaining });
+      };
+      const res = await deadline(run(), this.opts.timeoutMs, "tools/list");
+      this.cachedTools = new Set(res.tools.map((t) => t.name));
+      this.noteSuccess();
+      return this.cachedTools;
+    } catch (err) {
+      const e = classifyError(err, this.opts.token);
       await this.reset();
       this.noteFailure(e);
       throw e;

@@ -37,19 +37,22 @@ export const REMOTE_DISABLED_FEATURES: readonly string[] = [
   "local brain.db (never opened)",
   "in-process sleep timers: awake replay (30m), hourly harvest-to-local, embedding sweep (10m) — the service owns sleep",
   "openwave:consolidation host cron (not registered; an existing one is removed)",
-  "episode log writes (message_received / llm_output / session markers / compaction) — the service has no episode-append tool yet",
+  "episode log writes ONLY when the service does not advertise brain_episode_append (older sharpwave-server); with it, episodes are appended remotely",
   "session bootstrap (self-model prose, goals, morning brief, know, recent episodes, review queue, dream context)",
   "self-model header identity/goals/neuromodulator lines (a one-line remote banner is injected instead)",
   "always-on procedural rules block",
   "last-24h cross-session activity block",
   "proactive monitor pre-priming, working-memory clears, coactivation recording, dopamine spikes",
   "VALOR injection scoring",
-  "subconscious tick (agent_end) and compaction handling (after_compaction)",
+  "subconscious tick (agent_end) and compaction graph handling (after_compaction; only the compaction marker episode is appended)",
   "temporal before/after edges from LLM extraction",
   "tools not served by the service: brain_update_self_model, brain_reflect, brain_generate_skill, brain_workspace, brain_docs",
 ];
 
-/** Tools the brain service serves (sharpwave-server SERVICE_TOOLS). */
+/** Optional service tool used for episode writes (sharpwave-server >= engram/server-episode-append). Internal plumbing: not exposed to the model. */
+export const EPISODE_APPEND_TOOL = "brain_episode_append";
+
+/** Tools the brain service serves (sharpwave-server SERVICE_TOOLS) that are proxied to the model. */
 export const REMOTE_TOOL_NAMES = [
   "brain_query",
   "brain_write",
@@ -179,6 +182,8 @@ type AgentConn = {
   status: BrainConnectionInfo["status"];
   lastError?: string;
   serviceAgentId?: string;
+  /** Feature detection result for brain_episode_append (undefined = not yet known). */
+  episodeAppend?: boolean;
 };
 
 export type RemoteRuntime = {
@@ -187,6 +192,8 @@ export type RemoteRuntime = {
   connectionInfo: () => BrainConnectionInfo;
   /** Resolves when the gateway_start health/auth check finishes (tests). */
   startupCheck: Promise<void> | null;
+  /** Wait for in-flight fire-and-forget episode appends (tests / shutdown). */
+  flushEpisodes: () => Promise<void>;
   stop: () => Promise<void>;
 };
 
@@ -331,6 +338,50 @@ export function registerRemoteMode(
     log.warn(logFields({ op: "registerMemoryCorpusSupplement", outcome: "error", error: String(err) }));
   }
 
+  // ── Episodes → service (brain_episode_append, feature-detected) ──────────
+  // Mirrors local core.appendEpisode call sites. Fire-and-forget so a slow
+  // service never delays a hook; each call is still bounded by timeoutMs.
+  // If the service doesn't advertise the tool (older sharpwave-server), we keep
+  // the previous behaviour: episodes are not stored (logged once per agent).
+  const pendingEpisodes = new Set<Promise<void>>();
+  const supportsEpisodes = async (agentId: string): Promise<boolean> => {
+    const c = conns.get(agentId);
+    if (!c?.client) return false;
+    try {
+      const names = await c.client.toolNames();
+      const has = names.has(EPISODE_APPEND_TOOL);
+      if (c.episodeAppend !== has) {
+        log.info(logFields({
+          agentId, op: "remote.episode_append", outcome: has ? "enabled" : "unsupported",
+          ...(has ? {} : { note: "brain service does not advertise brain_episode_append; episodes are not stored (upgrade sharpwave-server)" }),
+        }));
+      }
+      c.episodeAppend = has;
+      noteOk(agentId);
+      return has;
+    } catch (err) {
+      const e = err instanceof RemoteBrainError ? err : new RemoteBrainError("protocol", redact(String(err)));
+      reportFailure(agentId, "remote.episode_append.detect", e);
+      return false;
+    }
+  };
+  const appendEpisodeRemote = (agentId: string, sessionId: string, role: "user" | "assistant" | "tool", content: string, importance: number): void => {
+    const conn = conns.get(agentId);
+    if (!conn?.client || conn.episodeAppend === false) return;
+    const p = (async () => {
+      if (!(await supportsEpisodes(agentId))) return;
+      const r = await call(agentId, "remote.episode_append", EPISODE_APPEND_TOOL, {
+        session_id: sessionId || "unknown", role, content: content.slice(0, 32_000), importance: Math.max(0, Math.min(1, importance)),
+      });
+      if (r?.isError) {
+        const suppressed = warn.take(`${agentId}:episode_rejected`);
+        if (suppressed !== null) log.warn(logFields({ agentId, op: "remote.episode_append", outcome: "rejected", error: r.text.slice(0, 200), ...(suppressed ? { suppressed } : {}) }));
+      }
+    })().catch(() => { /* call() never throws; belt and braces */ });
+    pendingEpisodes.add(p);
+    void p.finally(() => pendingEpisodes.delete(p));
+  };
+
   // ── Extraction → service ──────────────────────────────────────────────────
   const harvesting = new Set<string>();
   const harvestToService = async (agentId: string, opPrefix: string): Promise<number> => {
@@ -379,6 +430,7 @@ export function registerRemoteMode(
         continue;
       }
       try { c.serviceAgentId = (JSON.parse(r.text) as { agentId?: string }).agentId; } catch { /* text format */ }
+      await supportsEpisodes(c.agentId);
       log.info(logFields({
         agentId: c.agentId, op: "remote.auth_check", outcome: "ok", serviceAgentId: c.serviceAgentId,
         ...(c.serviceAgentId && c.serviceAgentId !== c.agentId ? { note: `token belongs to service agent "${c.serviceAgentId}"; writes are stamped with that id` } : {}),
@@ -420,6 +472,7 @@ export function registerRemoteMode(
     settings,
     conns,
     startupCheck: null,
+    flushEpisodes: async () => { while (pendingEpisodes.size) await Promise.all([...pendingEpisodes]); },
     connectionInfo: () => {
       const all = [...conns.values()];
       const first = all[0];
@@ -433,11 +486,16 @@ export function registerRemoteMode(
         tokenSource: first?.tokenSource ?? "none",
         status: worst?.status ?? "misconfigured",
         ...(worst?.lastError ? { lastError: worst.lastError } : {}),
+        ...(first?.episodeAppend !== undefined ? { episodeAppend: first.episodeAppend } : {}),
         disabledInRemoteMode: [...REMOTE_DISABLED_FEATURES],
       };
     },
     stop: async () => {
       stopped = true;
+      await Promise.race([
+        Promise.all([...pendingEpisodes]),
+        new Promise((r) => { const t = setTimeout(r, settings.timeoutMs); t.unref?.(); }),
+      ]);
       if (timers.harvest) { clearInterval(timers.harvest); timers.harvest = null; }
       if (timers.health) { clearTimeout(timers.health); timers.health = null; }
       for (const c of conns.values()) await c.client?.close().catch(() => {});
@@ -503,11 +561,15 @@ export function registerRemoteMode(
     const agentId = helpers.resolveAgentId(event, hookCtx);
     if (!config.agents.includes(agentId)) return;
     recordHook(agentId, hookCtx, event);
+    const sessionKey = event?.sessionKey ?? hookCtx?.sessionKey ?? "";
+    appendEpisodeRemote(agentId, sessionKey, "tool", `[session start: ${sessionKey}]`, 0.1);
   }, { priority: 0, timeoutMs: 200 });
 
   api.on("session_end", async (event: { sessionId?: string; sessionKey?: string }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string }) => {
     const agentId = helpers.resolveAgentId(event, hookCtx);
     if (!config.agents.includes(agentId)) return;
+    const endKey = event?.sessionKey ?? hookCtx?.sessionKey ?? "";
+    appendEpisodeRemote(agentId, endKey, "tool", `[session end: ${endKey}]`, 0.1);
     await harvestToService(agentId, "session_end");
     helpers.clearSessionAgent(event?.sessionId ?? hookCtx?.sessionId);
     helpers.clearSessionAgent(event?.sessionKey ?? hookCtx?.sessionKey);
@@ -585,6 +647,7 @@ export function registerRemoteMode(
       const origin = classifyOrigin({ channelId: hookCtx?.channelId, senderId: event?.senderId, from: event?.from, sessionKey }, owners);
       const scored = isCron ? 0.1 : core.scoreImportance("user", content);
       const importance = owners.length === 0 ? scored : capImportance(origin, scored, config.llmExtractionMinImportance);
+      appendEpisodeRemote(agentId, sessionKey, "user", content, importance);
       queueForExtraction(agentId, sessionId, "user", content, importance);
     } catch (err) {
       log.debug?.(logFields({ op: "message_received", outcome: "error", brainMode: "remote", error: String(err) }));
@@ -601,10 +664,21 @@ export function registerRemoteMode(
       const sessionKey = hookCtx?.sessionKey ?? hookCtx?.sessionId ?? "";
       const sessionId = hookCtx?.sessionId ?? sessionKey;
       const isCron = /^agent:[^:]+:cron:/.test(sessionKey) || sessionKey.startsWith("cron:");
-      queueForExtraction(agentId, sessionId, "assistant", content, isCron ? 0.1 : core.scoreImportance("assistant", content));
+      const importance = isCron ? 0.1 : core.scoreImportance("assistant", content);
+      appendEpisodeRemote(agentId, sessionKey, "assistant", content, importance);
+      queueForExtraction(agentId, sessionId, "assistant", content, importance);
     } catch (err) {
       log.debug?.(logFields({ op: "llm_output", outcome: "error", brainMode: "remote", error: String(err) }));
     }
+  });
+
+  api.on("after_compaction", async (event: { compactedCount?: number; messageCount?: number }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string }) => {
+    try {
+      const agentId = helpers.resolveAgentId(undefined, hookCtx);
+      if (!config.agents.includes(agentId)) return;
+      const sessionKey = hookCtx?.sessionKey ?? hookCtx?.sessionId ?? "";
+      appendEpisodeRemote(agentId, sessionKey, "tool", `[compaction: ${event?.compactedCount ?? 0} of ${event?.messageCount ?? 0} messages compacted]`, 0.1);
+    } catch { /* never fail a hook */ }
   });
 
   log.info(logFields({
