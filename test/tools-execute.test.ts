@@ -6,6 +6,9 @@ import { join } from "node:path";
 import * as core from "sharpwave-core";
 import plugin from "../src/index.js";
 import { makeMockApi } from "./mock-api.js";
+import { assertPlainJson, directText, projectToolResultValue } from "./openclaw-projection.js";
+import { BRAIN_TOOL_OUTPUT_SCHEMA } from "../src/tool-result.js";
+import { Value } from "typebox/value";
 
 // Tools are called by OpenClaw as execute(toolCallId, params, signal, onUpdate, ctx)
 // (docs/plugins/building-plugins.md; OpenClawPluginToolContext in the SDK types), and
@@ -22,7 +25,7 @@ const dirs: string[] = [];
 afterAll(() => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); });
 
 type ToolCtx = { agentId?: string; sessionKey?: string; sessionId?: string };
-type ToolResult = { content?: Array<{ type: string; text: string }> };
+type ToolResult = { content?: Array<{ type: string; text: string }>; details?: { text: string; error?: string; data?: unknown } };
 
 function setup(extra: Record<string, unknown> = {}) {
   const mock = makeMockApi({ enabled: true, config: { agents: [A, B], ...extra } });
@@ -64,6 +67,39 @@ test("results use the OpenClaw content[] shape", async () => {
   expect(Array.isArray(out.content)).toBe(true);
   expect(out.content![0].type).toBe("text");
   expect(typeof out.content![0].text).toBe("string");
+});
+
+// openwave <= 0.1.2 returned details: {} and OpenClaw Code Mode hands the model
+// ONLY details, so brain_query came back as {} (live on 2026.9.7, remote mode;
+// local mode had the same shape). See test/remote/tool-results.test.ts.
+test("local brain_query: the memory text reaches the model on the direct AND the Code Mode path", async () => {
+  const mock = setup();
+  await buildTool(mock, "brain_write", { agentId: A }).execute("w1", {
+    type: "semantic", label: "Hailey dog", content: "Hailey has a corgi named Biscuit.",
+  });
+
+  const out = await buildTool(mock, "brain_query", { agentId: A }).execute("q1", { query: "Hailey corgi" });
+
+  assertPlainJson(out);
+  const direct = directText(out);
+  expect(direct).toContain("Hailey has a corgi named Biscuit.");
+  const codeMode = projectToolResultValue(out) as { text: string; error?: string };
+  expect(codeMode).not.toEqual({});
+  expect(codeMode.text).toBe(direct);
+  expect(codeMode.error).toBeUndefined();
+  expect(Value.Check(BRAIN_TOOL_OUTPUT_SCHEMA, out.details)).toBe(true);
+});
+
+test("every local tool declares the brain_* outputSchema; a refused call sets details.error", async () => {
+  const mock = setup();
+  for (const entry of mock.rec.tools) {
+    const def = (entry as (c: ToolCtx) => { name: string; outputSchema?: unknown })({ agentId: A });
+    expect(def.outputSchema, def.name).toEqual(BRAIN_TOOL_OUTPUT_SCHEMA);
+  }
+  const out = await buildTool(mock, "brain_write", {}).execute("c0", { type: "semantic", label: "x", content: "x" });
+  const codeMode = projectToolResultValue(out) as { text: string; error?: string };
+  expect(codeMode.text).toMatch(/cannot determine/i);
+  expect(codeMode.error).toBe(codeMode.text);
 });
 
 test("brain_write lands in the CALLING agent's brain only", async () => {

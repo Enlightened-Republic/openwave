@@ -220,6 +220,16 @@ Definitions and executors come from `sharpwave-core`'s unified tool module, so
 openwave and the `sharpwave` MCP server can never expose a drifted schema. (The
 MCP server publishes a narrower 11-tool subset.)
 
+**Result shape.** Every `brain_*` tool (local and remote mode) returns
+`{ content: [{ type: "text", text }], details: { text, error?, data? } }` and
+declares that `details` shape as its `outputSchema`. `details.text` is the same
+text as the content block; `error` is set (same text) only on a failed call;
+`data` is the parsed JSON when the output is JSON (e.g. `brain_query` with
+`format: "json"`). This matters because OpenClaw's Code Mode (on by default via
+`tools.codeMode: "auto"` for preferred models) and Tool Search value calls hand
+the model **only** `details`: openwave ≤ 0.1.2 returned `details: {}`, so in
+those paths every tool came back as `{}`.
+
 Most memory work needs **no** tool call — openwave injects and logs
 automatically. The tools are for deliberate deep recall (`brain_query`),
 deliberate writes (`brain_write`), and introspection.
@@ -258,7 +268,7 @@ Same brain db, same schema, no migration in either direction.
 ## Development
 
 ```bash
-npm install
+npm ci                 # lockfile install (sharpwave-core 0.4.5 from npm; no local core build needed)
 npm run build          # esbuild → dist/index.js (single file, sharpwave-core inlined)
 npm test               # vitest — mock-api hook harness
 ```

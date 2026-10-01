@@ -21,6 +21,7 @@ import { BRAIN_TOOL_DEFS } from "sharpwave-core";
 import { capImportance, classifyOrigin, readOwnerAllowFrom } from "../provenance.js";
 import { CONSOLIDATION_CRON_ID, type CronService } from "../engram-graft.js";
 import { RemoteBrainClient, RemoteBrainError, checkHealth } from "./client.js";
+import { BRAIN_TOOL_OUTPUT_SCHEMA, brainToolResult } from "../tool-result.js";
 import {
   loadToken,
   redact,
@@ -119,7 +120,7 @@ export class WarnLimiter {
   clear(): void { this.last.clear(); }
 }
 
-/** Mirrors sharpwave-server's published schema: core's def minus writer_agent_id, plus visibility/scope/format. */
+/** Mirrors sharpwave-server's published schema (SERVICE_TOOLS; pinned by test/remote/tool-results.test.ts): core's def minus writer_agent_id, plus visibility/scope/format. */
 function remoteToolSchema(name: string): { description: string; parameters: Record<string, unknown> } {
   const base = BRAIN_TOOL_DEFS[name];
   const props: Record<string, unknown> = { ...((base?.inputSchema?.properties as Record<string, unknown>) ?? {}) };
@@ -128,9 +129,14 @@ function remoteToolSchema(name: string): { description: string; parameters: Reco
   const vis = { type: "string", enum: ["private", "shared"], description: 'Which brain: "private" (yours, default) or "shared" (visible to every agent; writing needs the shared-write scope).' };
   if (name === "brain_query") {
     props["scope"] = { type: "string", enum: ["all", "private", "shared"], description: 'Which brains to search: "all" (default: private + shared), "private", or "shared".' };
-    props["format"] = { type: "string", enum: ["text", "json"] };
+    props["format"] = { type: "string", enum: ["text", "json"], description: "Output format (default text)." };
   } else if (name === "brain_stats") {
     props["visibility"] = { type: "string", enum: ["all", "private", "shared"], description: "Which brain(s) to report (default all)." };
+    props["format"] = { type: "string", enum: ["text", "json"], description: "Output format (default text)." };
+  } else if (name === "brain_expand") {
+    // The service also accepts format (text|json) here; keep the published schema in sync.
+    props["visibility"] = { ...vis, description: "Which brain holds the node. Default: your private brain, then shared." };
+    props["format"] = { type: "string", enum: ["text", "json"], description: "Output format (default text)." };
   } else {
     props["visibility"] = vis;
   }
@@ -284,7 +290,8 @@ export function registerRemoteMode(
   };
 
   // ── Tools: proxy to the service ───────────────────────────────────────────
-  const textResult = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
+  // Results go through brainToolResult so `details` carries the text: OpenClaw
+  // Code Mode / catalog calls hand the model ONLY `details` (see tool-result.ts).
   for (const name of REMOTE_TOOL_NAMES) {
     const schema = remoteToolSchema(name);
     api.registerTool(
@@ -292,19 +299,20 @@ export function registerRemoteMode(
         name,
         description: schema.description,
         parameters: schema.parameters,
+        outputSchema: BRAIN_TOOL_OUTPUT_SCHEMA,
         async execute(_toolCallId: string, params: Record<string, unknown> | undefined) {
           const who = helpers.resolveToolAgent(toolContext);
-          if ("error" in who) return textResult(who.error);
+          if ("error" in who) return brainToolResult(who.error, { isError: true });
           const conn = conns.get(who.agentId);
-          if (!conn?.client) return textResult(`openwave (remote mode): no brain service connection for agent "${who.agentId}": ${conn?.lastError ?? "not configured"}`);
+          if (!conn?.client) return brainToolResult(`openwave (remote mode): no brain service connection for agent "${who.agentId}": ${conn?.lastError ?? "not configured"}`, { isError: true });
           const r = await call(who.agentId, `tool.${name}`, name, params ?? {});
           if (!r) {
             const st = conns.get(who.agentId);
-            return textResult(st?.status === "unauthorized"
+            return brainToolResult(st?.status === "unauthorized"
               ? `Error: the SharpWave brain service rejected this agent's token — memory is unavailable until the token is fixed.`
-              : `Error: the SharpWave brain service is unreachable (${st?.lastError ?? "unknown error"}). Try again later.`);
+              : `Error: the SharpWave brain service is unreachable (${st?.lastError ?? "unknown error"}). Try again later.`, { isError: true });
           }
-          return textResult(r.text);
+          return brainToolResult(r.text, { isError: r.isError });
         },
       }),
       { name },

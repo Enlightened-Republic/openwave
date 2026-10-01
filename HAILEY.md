@@ -13,8 +13,7 @@
 - Config schema: `curatedTierDedupe`, `consolidationCron`, `consolidationCronEnabled`.
 
 ## Dependency
-- `sharpwave-core` pinned `^0.4.4`. Published 0.4.3 does **not** contain sharpwave#5's widening (0.4.2/0.4.3 only suppress the goals block). sharpwave#5 must be rebased onto sharpwave main and published as 0.4.4 (its own 0.4.2 bump collides with the already-published 0.4.2). `package-lock.json` still resolves 0.4.3 until 0.4.4 is published — run `npm install` then to refresh it.
-- openwave works against 0.4.3 too (tests pass); the widened dedupe simply isn't active until 0.4.4.
+- `sharpwave-core` pinned `^0.4.5` (published on npm as `latest`; contains sharpwave#5's widened `externalMemoryActive`). `package-lock.json` resolves 0.4.5, so a plain `npm ci` works. The old workaround (build core from the sharpwave checkout and `npm install --no-save ..\sharpwave\packages\core`, never `npm ci`) is no longer needed; see sharpwave `docs/windows-install-runbook.md` §10g.2 for the updated install.
 
 ## Graft B smoke (live gateway — Hailey)
 1. Confirm `openwave:consolidation` in `openclaw cron list` at `30 4 * * *`
