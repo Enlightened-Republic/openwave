@@ -148,6 +148,62 @@ Env vars read directly: `OPENROUTER_API_KEY` / `SHARPWAVE_OPENROUTER_API_KEY`,
 
 ---
 
+## Remote brain mode (experimental)
+
+By default openwave opens `~/.sharpwave/<agent>/brain.db` in-process (`brainMode: "local"`).
+With `brainMode: "remote"` it instead talks to the **SharpWave brain service**
+(`sharpwave-server`, `packages/server` on sharpwave main, **unpublished**) over MCP
+Streamable HTTP, using a per-agent bearer token. The service owns storage *and* sleep.
+
+```jsonc
+"plugins": {
+  "entries": {
+    "openwave": {
+      "enabled": true,
+      "hooks": { "allowConversationAccess": true },
+      "config": {
+        "agents": ["main"],
+        "brainMode": "remote",
+        "brainUrl": "http://127.0.0.1:18790",
+        "brainTokenFile": "~/.sharpwave/tokens/{agentId}.token",
+        "sharedRecall": true,
+        "remoteTimeoutMs": 2500
+      }
+    }
+  }
+}
+```
+
+| field | default | meaning |
+|---|---|---|
+| `brainMode` | `"local"` | `"remote"` switches to the brain service. Local installs are unaffected. |
+| `brainUrl` | `http://127.0.0.1:18790` | Service base URL (`/mcp`, `/health`). |
+| `brainTokenFile` | — | **Preferred.** File holding the token from `sharpwave-server token mint`. `~` and `{agentId}` (the OpenClaw agent id) are expanded, so one entry serves several agents. UTF-8/UTF-16/BOM all accepted. |
+| `$OPENWAVE_BRAIN_TOKEN` | — | Used when `brainTokenFile` is unset (single agent only). |
+| `brainToken` | — | Inline token (discouraged: it lands in `openclaw.json`). Single agent only. |
+| `sharedRecall` | `true` | Per-turn recall also searches the shared brain; shared hits are tagged `[type·shared]`. |
+| `remoteTimeoutMs` | `2500` | Per-call budget. A slow/dead service costs a turn at most this, then the client backs off (2s → 60s) and fails fast. |
+
+The token is never logged; only its source (`file`/`env`/`inline`) is. A rejected
+token logs an `error` line containing `BAD BRAIN TOKEN` and the `getBrainConnection`
+settings action reports `status: "unauthorized"`.
+
+**What works remotely:** the 11 service tools (`brain_query, brain_write, brain_link,
+brain_supersede, brain_stats, brain_history, brain_expand, brain_review, brain_forget,
+brain_edges, brain_reset`) proxied 1:1; per-turn recall (private + shared) in the same
+`[BRAIN: on your mind …]` block with Graft A dedupe (identity/goal hits dropped when
+MEMORY.md/USER.md is curated); LLM-extraction facts written to the service on
+`session_end` and hourly; the memory-corpus supplement.
+
+**Disabled in remote mode** (no service equivalent yet): local brain.db, in-process
+sleep timers (awake replay, hourly harvest-to-local, embedding sweep), the
+`openwave:consolidation` host cron (an existing one is removed), episode-log writes,
+the session bootstrap block, identity/goals/neuro header lines, the procedural-rules
+block, the last-24h activity block, proactive monitor / working memory / coactivations /
+dopamine, VALOR scoring, subconscious tick, compaction handling, temporal edges from
+extraction, and the tools `brain_update_self_model, brain_reflect, brain_generate_skill,
+brain_workspace, brain_docs`.
+
 ## Tools
 
 openwave registers all **16** `brain_*` tools:

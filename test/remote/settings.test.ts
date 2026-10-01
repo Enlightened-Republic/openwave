@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 
-import { loadToken, redact, resolveRemoteSettings, tokenIsSingleAgent, resolveBrainMode } from "../../src/remote/settings.js";
+import { decodeTokenFile, loadToken, redact, resolveRemoteSettings, tokenIsSingleAgent, resolveBrainMode } from "../../src/remote/settings.js";
 import { WarnLimiter, formatRecallBlock } from "../../src/remote/register.js";
 
 test("defaults: local mode, 127.0.0.1:18790, sharedRecall on", () => {
@@ -51,4 +51,10 @@ test("formatRecallBlock keeps the local line format and tags shared hits", () =>
   expect(formatRecallBlock(hits, "chat", false).split("\n").slice(1)).toEqual(["[semantic] A: aaa", "[goal·shared] G: ggg"]);
   expect(formatRecallBlock(hits, "chat", true)).not.toContain("G: ggg");
   expect(formatRecallBlock([], "chat", false)).toBe("");
+});
+
+test("token files written by Windows PowerShell (UTF-16 / BOM / CRLF) decode cleanly", () => {
+  expect(decodeTokenFile(Buffer.from("\uFEFFswt_abc\r\n", "utf8"))).toBe("swt_abc");
+  expect(decodeTokenFile(Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("swt_abc\r\n", "utf16le")]))).toBe("swt_abc");
+  expect(decodeTokenFile(Buffer.from("swt_abc", "utf16le"))).toBe("swt_abc");
 });

@@ -70,6 +70,15 @@ export type TokenResult =
   | { ok: true; token: string; source: TokenSource }
   | { ok: false; source: TokenSource; reason: string };
 
+/** Token files written on Windows may be UTF-16 (PowerShell 5 `>`/Out-File) or carry a BOM. */
+export function decodeTokenFile(buf: Buffer): string {
+  let text: string;
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) text = buf.subarray(2).toString("utf16le");
+  else if (buf.length >= 2 && buf[1] === 0x00) text = buf.toString("utf16le");
+  else text = buf.toString("utf8");
+  return text.replace(/^\uFEFF/, "").trim();
+}
+
 /**
  * Resolve the bearer token for one served agent. Precedence:
  *   1. brainTokenFile (path; `{agentId}` placeholder supported)
@@ -82,7 +91,7 @@ export function loadToken(cfg: RemoteConfigFields, agentId: string, env: NodeJS.
   if (typeof cfg.brainTokenFile === "string" && cfg.brainTokenFile.trim()) {
     const path = expandTokenPath(cfg.brainTokenFile.trim(), agentId);
     try {
-      const token = readFileSync(path, "utf8").trim();
+      const token = decodeTokenFile(readFileSync(path));
       if (!token) return { ok: false, source: "file", reason: `brainTokenFile is empty: ${path}` };
       if (/\s/.test(token)) return { ok: false, source: "file", reason: `brainTokenFile must contain only the token (found whitespace): ${path}` };
       return { ok: true, token, source: "file" };
