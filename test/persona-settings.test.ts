@@ -3,15 +3,17 @@ import { expect, test } from "vitest";
 import plugin from "../src/index.js";
 import { makeMockApi } from "./mock-api.js";
 
-test("registers the 3 persona-settings session actions", () => {
+test("registers the 3 persona-settings session actions (+ read-only getBrainConnection)", () => {
   const { api, rec } = makeMockApi({ enabled: true, config: { agents: ["main"] } });
   plugin.register(api as never);
 
   expect([...rec.sessionActions.keys()].sort()).toEqual([
     "clearPersonaOverride",
+    "getBrainConnection",
     "getPersonaConfig",
     "setPersonaOverride",
   ]);
+  expect(rec.sessionActions.get("getBrainConnection")?.requiredScopes).toEqual(["operator.read"]);
   expect(rec.sessionActions.get("getPersonaConfig")?.requiredScopes).toEqual(["operator.read"]);
   expect(rec.sessionActions.get("setPersonaOverride")?.requiredScopes).toEqual(["operator.write"]);
   expect(rec.sessionActions.get("clearPersonaOverride")?.requiredScopes).toEqual(["operator.write"]);
