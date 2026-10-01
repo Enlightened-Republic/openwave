@@ -43,6 +43,7 @@ import {
   resolveRemoteSettings,
   type RemoteConfigFields,
 } from "./remote/settings.js";
+import { NoisePairTracker, classifySystemTurn, isHeartbeatSessionKey, resolveSystemNoiseSettings, type InputProvenanceLike } from "./system-noise.js";
 import { registerRemoteMode, type RemoteRuntime } from "./remote/register.js";
 import { BRAIN_TOOL_OUTPUT_SCHEMA, brainToolResult } from "./tool-result.js";
 import type { BrainConnectionInfo } from "./settings-contract.js";
@@ -69,6 +70,14 @@ type OpenwaveConfig = core.BrainConfig & RemoteConfigFields & {
   consolidationCron?: string;
   /** When false, skip registering the openwave:consolidation host cron. Default true. */
   consolidationCronEnabled?: boolean;
+  /**
+   * Skip OpenClaw system turns (heartbeat polls, exec/cron/session-event wakes,
+   * NO_REPLY / HEARTBEAT_OK replies, memory-flush runs) on every memory-writing
+   * path: no episode, no extraction. Default true. See src/system-noise.ts.
+   */
+  skipSystemTurns?: boolean;
+  /** Extra regexes (case-insensitive) matched against a turn's trimmed text; a match is skipped like a system turn. */
+  systemTurnPatterns?: string[];
 };
 
 const DEFAULT_OPENWAVE_CONFIG: OpenwaveConfig = {
@@ -79,6 +88,8 @@ const DEFAULT_OPENWAVE_CONFIG: OpenwaveConfig = {
   curatedTierDedupe: true,
   consolidationCron: "30 4 * * *",
   consolidationCronEnabled: true,
+  skipSystemTurns: true,
+  systemTurnPatterns: [],
   // Remote brain mode (src/remote/). "local" keeps every existing install unchanged.
   brainMode: "local",
   brainUrl: DEFAULT_BRAIN_URL,
@@ -698,6 +709,19 @@ export default definePluginEntry({
     }
     remoteRuntime = null;
 
+    // System-noise gate (local mode). Same classifier as remote mode: skipped
+    // turns get no episode and no extraction-queue entry, so neither the
+    // hourly / session_end harvest nor in-process SWS can mint nodes from them.
+    const noise = resolveSystemNoiseSettings(config);
+    const noisePairs = new NoisePairTracker();
+    if (noise.invalidPatterns.length) log.warn(logFields({ op: "system_noise.patterns", outcome: "invalid", count: noise.invalidPatterns.length }));
+    const skipTurn = (agentId: string, op: string, t: Parameters<typeof classifySystemTurn>[0]): boolean => {
+      const v = classifySystemTurn(t, noise);
+      if (!v.skip) return false;
+      log.debug?.(logFields({ agentId, op, outcome: "skipped_system_noise", reason: v.reason, via: v.via, role: t.role }));
+      return true;
+    };
+
     for (const name of OPENWAVE_TOOL_NAMES) {
       api.registerTool(
         (toolContext: ToolContextLike) => ({
@@ -1009,7 +1033,7 @@ export default definePluginEntry({
       knownSessions.add(sessionId);
 
       try {
-        core.appendEpisode(agentId, sessionKey, "tool", `[session start: ${sessionKey}]`, 0.1);
+        if (!(noise.enabled && isHeartbeatSessionKey(sessionKey))) core.appendEpisode(agentId, sessionKey, "tool", `[session start: ${sessionKey}]`, 0.1);
       } catch (err) {
         log.warn(logFields({ agentId, sessionId, op: "session_start.episode", outcome: "error", error: String(err) }));
       }
@@ -1055,7 +1079,7 @@ export default definePluginEntry({
       const sessionKey = event?.sessionKey ?? hookCtx?.sessionKey ?? "";
 
       try {
-        core.appendEpisode(agentId, sessionKey, "tool", `[session end: ${sessionKey}]`, 0.1);
+        if (!(noise.enabled && isHeartbeatSessionKey(sessionKey))) core.appendEpisode(agentId, sessionKey, "tool", `[session end: ${sessionKey}]`, 0.1);
       } catch (err) {
         log.warn(logFields({ agentId, sessionId, op: "session_end.episode", outcome: "error", error: String(err) }));
       }
@@ -1307,6 +1331,12 @@ export default definePluginEntry({
       const sessionId = hookCtx?.sessionId ?? sessionKey;
       recordSessionAgent(sessionId, agentId);
       recordSessionAgent(sessionKey, agentId);
+      const mctx = hookCtx as { trigger?: string; inputProvenance?: InputProvenanceLike } | undefined;
+      if (skipTurn(agentId, "message_received", { role: "user", content, sessionKey, trigger: mctx?.trigger, inputProvenance: mctx?.inputProvenance })) {
+        noisePairs.markUserSkipped(sessionKey);
+        return;
+      }
+      noisePairs.clear(sessionKey);
       // Cron sessions are operational overhead — record the episode for SWS
       // history but clamp importance below extraction threshold so cron
       // artifacts never become extracted brain nodes. Live key format (verified
@@ -1357,7 +1387,7 @@ export default definePluginEntry({
     });
 
     // llm_output
-    api.on("llm_output", async (event: { assistantTexts?: string[]; content?: string }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string }) => {
+    api.on("llm_output", async (event: { assistantTexts?: string[]; content?: string; prompt?: string }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string; trigger?: string; inputProvenance?: InputProvenanceLike }) => {
       const agentId = resolveAgentId(undefined, hookCtx, config.agents);
       if (!config.agents.includes(agentId)) return;
 
@@ -1371,6 +1401,11 @@ export default definePluginEntry({
 
       const sessionKey = hookCtx?.sessionKey ?? hookCtx?.sessionId ?? "";
       const sessionId = hookCtx?.sessionId ?? sessionKey;
+      if (noise.enabled && noisePairs.takeReplySkip(sessionKey)) {
+        log.debug?.(logFields({ agentId, op: "llm_output", outcome: "skipped_system_noise", reason: "pair:reply_to_skipped_user_turn", via: "session", role: "assistant" }));
+        return;
+      }
+      if (skipTurn(agentId, "llm_output", { role: "assistant", content, sessionKey, trigger: hookCtx?.trigger, inputProvenance: hookCtx?.inputProvenance, prompt: event?.prompt })) return;
       // Cron sessions are operational overhead — clamp importance below the
       // extraction threshold so responses like "Awakened via cron — Morning
       // Routine" never become extracted brain nodes. Episode still written for
@@ -1437,7 +1472,7 @@ export default definePluginEntry({
 
       const sessionKey = hookCtx?.sessionKey ?? hookCtx?.sessionId ?? "";
       try {
-        core.appendEpisode(
+        if (!(noise.enabled && isHeartbeatSessionKey(sessionKey))) core.appendEpisode(
           agentId,
           sessionKey,
           "tool",
@@ -1470,6 +1505,8 @@ export default definePluginEntry({
       // added 2026-07-13 when REM fell back to keyword mode despite the nvidia
       // ingestionModel being configured — makes key/config delivery visible.
       ingestionModel: config.ingestionModel,
+      skipSystemTurns: noise.enabled,
+      systemTurnPatterns: noise.extraPatterns.length,
       nvidiaKeyPresent: !!process.env["NVIDIA_API_KEY"],
       openRouterKeyPresent: !!(config.openRouterApiKey || process.env["OPENROUTER_API_KEY"]),
     }));

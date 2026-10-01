@@ -1,7 +1,7 @@
 {
   "id": "openwave",
   "name": "openwave",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Autonomic wake-up memory for OpenClaw agents. Injects identity, goals and query-relevant recall into every turn, and runs the sleep system (consolidation, awake replay, extraction) in-process. Powered by sharpwave-core.",
   "activation": {
     "onStartup": true
@@ -110,6 +110,19 @@
       "llmExtractionMinImportance": {
         "type": "number",
         "default": 0.4
+      },
+      "skipSystemTurns": {
+        "type": "boolean",
+        "default": true,
+        "description": "Skip OpenClaw system turns (heartbeat polls, exec/cron/session-event wakes, NO_REPLY / HEARTBEAT_OK replies, memory-flush runs) on every memory-writing path: no episode, no extraction."
+      },
+      "systemTurnPatterns": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "Extra case-insensitive regexes; a turn whose trimmed text matches is skipped like a system turn."
       },
       "skillEvolution": {
         "type": "boolean",
