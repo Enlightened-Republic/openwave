@@ -32,6 +32,7 @@ import {
   type TokenSource,
 } from "./settings.js";
 import type { BrainConnectionInfo } from "../settings-contract.js";
+import { NoisePairTracker, classifySystemTurn, isHeartbeatSessionKey, resolveSystemNoiseSettings, type InputProvenanceLike, type TurnSignals } from "../system-noise.js";
 
 /** Local-only features that are switched off in remote mode (listed in the PR / README). */
 export const REMOTE_DISABLED_FEATURES: readonly string[] = [
@@ -85,6 +86,8 @@ const HEALTH_MAX_ATTEMPTS = 12;
 
 type Log = { info: (m: string) => void; warn: (m: string) => void; error: (m: string) => void; debug?: (m: string) => void };
 type ToolContextLike = { agentId?: string; sessionKey?: string; sessionId?: string } | undefined;
+/** Agent hook context fields openwave reads (OpenClaw PluginHookAgentContext subset). */
+type AgentHookCtx = { agentId?: string; sessionKey?: string; sessionId?: string; trigger?: string; inputProvenance?: InputProvenanceLike };
 
 export type RemoteHelpers = {
   resolveToolAgent: (tc: ToolContextLike) => { agentId: string } | { error: string };
@@ -200,16 +203,33 @@ export type RemoteRuntime = {
   startupCheck: Promise<void> | null;
   /** Wait for in-flight fire-and-forget episode appends (tests / shutdown). */
   flushEpisodes: () => Promise<void>;
+  /** Turns skipped by the system-noise gate since register (diagnostics/tests). */
+  noiseSkipped: () => number;
   stop: () => Promise<void>;
 };
 
 export function registerRemoteMode(
   api: Api,
-  config: RemoteConfigFields & core.BrainConfig & { agents: string[] },
+  config: RemoteConfigFields & core.BrainConfig & { agents: string[]; skipSystemTurns?: boolean; systemTurnPatterns?: string[] },
   log: Log,
   helpers: RemoteHelpers,
 ): RemoteRuntime {
   const settings = resolveRemoteSettings(config);
+  // System-noise gate (heartbeat polls, exec/cron wakes, NO_REPLY/HEARTBEAT_OK
+  // replies): skipped turns produce NO episode and NO extraction-queue entry, so
+  // neither brain_episode_append nor the harvest's brain_write ever sees them.
+  const noise = resolveSystemNoiseSettings(config);
+  const noisePairs = new NoisePairTracker();
+  let noiseSkipped = 0;
+  if (noise.invalidPatterns.length) log.warn(logFields({ op: "system_noise.patterns", outcome: "invalid", count: noise.invalidPatterns.length, note: "ignored invalid systemTurnPatterns entries" }));
+  /** True when the turn must not be written to memory (logged at debug). */
+  const skipTurn = (agentId: string, op: string, t: TurnSignals): boolean => {
+    const v = classifySystemTurn(t, noise);
+    if (!v.skip) return false;
+    noiseSkipped++;
+    log.debug?.(logFields({ agentId, op, outcome: "skipped_system_noise", reason: v.reason, via: v.via, role: t.role }));
+    return true;
+  };
   const warn = new WarnLimiter();
   const conns = new Map<string, AgentConn>();
   const timers = { harvest: null as NodeJS.Timeout | null, health: null as NodeJS.Timeout | null };
@@ -481,6 +501,7 @@ export function registerRemoteMode(
     conns,
     startupCheck: null,
     flushEpisodes: async () => { while (pendingEpisodes.size) await Promise.all([...pendingEpisodes]); },
+    noiseSkipped: () => noiseSkipped,
     connectionInfo: () => {
       const all = [...conns.values()];
       const first = all[0];
@@ -570,6 +591,7 @@ export function registerRemoteMode(
     if (!config.agents.includes(agentId)) return;
     recordHook(agentId, hookCtx, event);
     const sessionKey = event?.sessionKey ?? hookCtx?.sessionKey ?? "";
+    if (noise.enabled && isHeartbeatSessionKey(sessionKey)) return; // isolated heartbeat session: no markers
     appendEpisodeRemote(agentId, sessionKey, "tool", `[session start: ${sessionKey}]`, 0.1);
   }, { priority: 0, timeoutMs: 200 });
 
@@ -577,7 +599,7 @@ export function registerRemoteMode(
     const agentId = helpers.resolveAgentId(event, hookCtx);
     if (!config.agents.includes(agentId)) return;
     const endKey = event?.sessionKey ?? hookCtx?.sessionKey ?? "";
-    appendEpisodeRemote(agentId, endKey, "tool", `[session end: ${endKey}]`, 0.1);
+    if (!(noise.enabled && isHeartbeatSessionKey(endKey))) appendEpisodeRemote(agentId, endKey, "tool", `[session end: ${endKey}]`, 0.1);
     await harvestToService(agentId, "session_end");
     helpers.clearSessionAgent(event?.sessionId ?? hookCtx?.sessionId);
     helpers.clearSessionAgent(event?.sessionKey ?? hookCtx?.sessionKey);
@@ -650,6 +672,11 @@ export function registerRemoteMode(
       const sessionKey = event?.sessionKey ?? hookCtx?.sessionKey ?? "";
       const sessionId = hookCtx?.sessionId ?? sessionKey;
       recordHook(agentId, hookCtx, event);
+      if (skipTurn(agentId, "message_received", { role: "user", content, sessionKey, trigger: (hookCtx as AgentHookCtx)?.trigger, inputProvenance: (hookCtx as AgentHookCtx)?.inputProvenance })) {
+        noisePairs.markUserSkipped(sessionKey);
+        return;
+      }
+      noisePairs.clear(sessionKey);
       const isCron = /^agent:[^:]+:cron:/.test(sessionKey) || sessionKey.startsWith("cron:");
       const owners = readOwnerAllowFrom(api.runtime?.config?.current?.());
       const origin = classifyOrigin({ channelId: hookCtx?.channelId, senderId: event?.senderId, from: event?.from, sessionKey }, owners);
@@ -662,7 +689,7 @@ export function registerRemoteMode(
     }
   });
 
-  api.on("llm_output", async (event: { assistantTexts?: string[]; content?: string }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string }) => {
+  api.on("llm_output", async (event: { assistantTexts?: string[]; content?: string; prompt?: string }, hookCtx: AgentHookCtx) => {
     try {
       const agentId = helpers.resolveAgentId(undefined, hookCtx);
       if (!config.agents.includes(agentId)) return;
@@ -671,6 +698,9 @@ export function registerRemoteMode(
       if (!content) return;
       const sessionKey = hookCtx?.sessionKey ?? hookCtx?.sessionId ?? "";
       const sessionId = hookCtx?.sessionId ?? sessionKey;
+      const paired = noise.enabled && noisePairs.takeReplySkip(sessionKey);
+      if (paired) { noiseSkipped++; log.debug?.(logFields({ agentId, op: "llm_output", outcome: "skipped_system_noise", reason: "pair:reply_to_skipped_user_turn", via: "session", role: "assistant" })); return; }
+      if (skipTurn(agentId, "llm_output", { role: "assistant", content, sessionKey, trigger: hookCtx?.trigger, inputProvenance: hookCtx?.inputProvenance, prompt: event?.prompt })) return;
       const isCron = /^agent:[^:]+:cron:/.test(sessionKey) || sessionKey.startsWith("cron:");
       const importance = isCron ? 0.1 : core.scoreImportance("assistant", content);
       appendEpisodeRemote(agentId, sessionKey, "assistant", content, importance);
@@ -680,11 +710,12 @@ export function registerRemoteMode(
     }
   });
 
-  api.on("after_compaction", async (event: { compactedCount?: number; messageCount?: number }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string }) => {
+  api.on("after_compaction", async (event: { compactedCount?: number; messageCount?: number }, hookCtx: AgentHookCtx) => {
     try {
       const agentId = helpers.resolveAgentId(undefined, hookCtx);
       if (!config.agents.includes(agentId)) return;
       const sessionKey = hookCtx?.sessionKey ?? hookCtx?.sessionId ?? "";
+      if (noise.enabled && isHeartbeatSessionKey(sessionKey)) return; // isolated heartbeat session: no marker
       appendEpisodeRemote(agentId, sessionKey, "tool", `[compaction: ${event?.compactedCount ?? 0} of ${event?.messageCount ?? 0} messages compacted]`, 0.1);
     } catch { /* never fail a hook */ }
   });
@@ -694,6 +725,7 @@ export function registerRemoteMode(
     tools: REMOTE_TOOL_NAMES.length, sharedRecall: settings.sharedRecall, timeoutMs: settings.timeoutMs,
     tokenSources: [...conns.values()].map((c) => `${c.agentId}:${c.tokenSource}`).join(","),
     disabled: REMOTE_DISABLED_FEATURES.length,
+    skipSystemTurns: noise.enabled, systemTurnPatterns: noise.extraPatterns.length,
   }));
 
   return runtime;
