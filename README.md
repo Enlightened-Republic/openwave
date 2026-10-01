@@ -115,6 +115,8 @@ merged over the defaults and passed straight into the engine.
 | `enabled` | `boolean` | `true` | `false` (or `entries.openwave.enabled: false`) → `register` returns immediately, no tools, no hooks. |
 | `llmExtractionEnabled` | `boolean` | `false` | `true` → `message_received` / `llm_output` episodes at or above `llmExtractionMinImportance` are queued for LLM fact extraction into graph nodes. `false` → heuristic extractor only. |
 | `llmExtractionMinImportance` | `number` | `0.4` | Importance floor for queueing an episode for extraction. |
+| `skipSystemTurns` | `boolean` | `true` | Skip OpenClaw system turns on every memory-writing path (local and remote): heartbeat polls and their replies, `[OpenClaw exec completion]` / cron / session-event wakes, `NO_REPLY` / `HEARTBEAT_OK` replies, memory-flush runs. Skipped turns get **no episode and no extraction**. See [System turns](#system-turns). |
+| `systemTurnPatterns` | `string[]` | `[]` | Extra case-insensitive regexes; a turn whose trimmed text matches is skipped like a system turn. Invalid entries are ignored (warned once). |
 | `ingestionModel` | `string` | `"openrouter/deepseek/deepseek-v4-flash"` | Model for LLM fact extraction and generative REM. `openrouter/provider/model` or bare `provider/model` both work. |
 | `openRouterApiKey` | `string` | `$OPENROUTER_API_KEY` / `$SHARPWAVE_OPENROUTER_API_KEY` / `""` | OpenRouter key for engine LLM calls. Empty → extraction and generative-REM degrade to heuristic mode (non-fatal). Prefer the env var over putting the key in `openclaw.json`. |
 
@@ -145,6 +147,38 @@ Engine (`BrainConfig`) fields you can also override, passed through to
 Env vars read directly: `OPENROUTER_API_KEY` / `SHARPWAVE_OPENROUTER_API_KEY`,
 `SHARPWAVE_EMBEDDING_MODEL`, `SHARPWAVE_DATA_DIR` (brain-db parent dir) /
 `SHARPWAVE_DB_PATH` (exact file).
+
+### System turns
+
+OpenClaw runs heartbeat polls, exec-completion / cron / session-event wakes and
+memory-flush runs as agent turns. Their text is machinery ("[OpenClaw heartbeat
+poll]", "NO_REPLY — nothing urgent…"), and stored as episodes it was being
+consolidated into recallable nodes that outranked real memories. Since 0.1.4 one
+classifier (`src/system-noise.ts`, `isSystemNoiseTurn`) gates every path that
+writes memory — episode append (local `appendEpisode`, remote
+`brain_episode_append`), the LLM-extraction queue (drained by the hourly and
+`session_end` harvest, local and remote), and therefore heuristic SWS, which only
+reads the episode log.
+
+Signals, strongest first (OpenClaw 2026.9.7):
+
+1. **Structured** — agent-hook `ctx.trigger` `heartbeat` or `memory`;
+   `ctx.inputProvenance.kind === "internal_system"` (any `sourceTool` except
+   `cron`); isolated heartbeat session keys ending in `:heartbeat`.
+2. **Text fallback** — user turns starting with an internal wake marker
+   (`[OpenClaw heartbeat poll]`, `[OpenClaw exec completion]`, `[OpenClaw cron
+   wake]`, `[OpenClaw session event]`), the default/legacy heartbeat prompt,
+   exec/cron event prompts, or bodies made only of `System:` event lines;
+   assistant replies that are, or start with, `NO_REPLY` / `HEARTBEAT_OK`
+   (also JSON envelopes, reasoning-prefixed, and short trailing acks).
+3. **Pairing** — after a skipped user turn, the next reply in that session is
+   skipped too.
+
+Skipped turns are **not appended at all** (no tag): the brain service's sleep
+selects episodes by importance only, so a tagged episode would still be
+consolidated unless every consumer learned the tag. Isolated automation (`cron`)
+turns are not skipped; they keep the existing importance clamp (0.1, below
+extraction). Normal turns that merely mention heartbeats are kept.
 
 ---
 

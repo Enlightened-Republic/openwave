@@ -14,8 +14,9 @@
 // Skipped turns are NOT appended at all (no episode, no queue entry). Why not
 // "append with a tag": the brain service's sleep (sharpwave-core runSwsPhase via
 // pickSwsEpisodes) selects every episode with importance >= 0.2 and no tag
-// filter; the polluting node in Tripp's brain ("NO_REPLY — 8:58 AM Phoenix …",
-// source=sws) was minted from exactly such an assistant episode (importance 0.5).
+// filter; the heartbeat-triage nodes seen in production (source=sws, content
+// starting "NO_REPLY — <time>, <triage reasoning>") were minted from exactly such
+// assistant episodes (heuristic importance 0.5).
 // A tag would need every consumer (SWS, recap/session summaries, brain_history,
 // the consolidation episode gate) to learn it; not writing needs none.
 //
