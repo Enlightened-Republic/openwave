@@ -44,6 +44,7 @@ import {
   type RemoteConfigFields,
 } from "./remote/settings.js";
 import { registerRemoteMode, type RemoteRuntime } from "./remote/register.js";
+import { BRAIN_TOOL_OUTPUT_SCHEMA, brainToolResult } from "./tool-result.js";
 import type { BrainConnectionInfo } from "./settings-contract.js";
 
 // ─── Config ────────────────────────────────────────────────────────────────────
@@ -652,7 +653,8 @@ export default definePluginEntry({
     // execute(toolCallId, params, signal, onUpdate, ctx) and returns { content: [{type:"text",text}] }.
     // Earlier versions declared execute(args, ctx), so the tool-call id string arrived as the
     // "arguments" and every parameterized tool failed (brain_docs saw section "").
-    const textResult = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
+    // `details` must carry the text too (brainToolResult): OpenClaw Code Mode and
+    // catalog calls hand the model ONLY `details`, so `details: {}` read as `{}`.
 
     // Identify the CALLER explicitly. core.agentIdFromKey falls back to the first configured
     // agent, which would silently read/write main's brain for an unknown caller, so it is not
@@ -702,11 +704,12 @@ export default definePluginEntry({
           name,
           description: BRAIN_TOOL_DEFS[name]!.description,
           parameters: BRAIN_TOOL_DEFS[name]!.inputSchema,
+          outputSchema: BRAIN_TOOL_OUTPUT_SCHEMA,
           async execute(_toolCallId: string, params: Record<string, unknown> | undefined) {
             const who = resolveToolAgent(toolContext);
-            if ("error" in who) return textResult(who.error);
+            if ("error" in who) return brainToolResult(who.error, { isError: true });
             const r = await dispatchBrainTool(name, who.agentId, params ?? {}, config, "openwave");
-            return textResult(r.text);
+            return brainToolResult(r.text, { isError: r.isError });
           },
         }),
         { name },

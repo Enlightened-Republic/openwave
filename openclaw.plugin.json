@@ -1,7 +1,7 @@
 {
   "id": "openwave",
   "name": "openwave",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Autonomic wake-up memory for OpenClaw agents. Injects identity, goals and query-relevant recall into every turn, and runs the sleep system (consolidation, awake replay, extraction) in-process. Powered by sharpwave-core.",
   "activation": {
     "onStartup": true
