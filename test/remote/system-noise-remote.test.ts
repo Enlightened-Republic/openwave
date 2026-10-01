@@ -2,7 +2,7 @@
 // system turns produce no episode (brain_episode_append is never called for
 // them) and no fact (the session_end harvest's brain_write never sees them).
 // A control run with skipSystemTurns:false proves the same scenario pollutes.
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -63,11 +63,19 @@ describe.skipIf(!HAVE_SERVER)("remote mode system-noise gate (real sharpwave-ser
 
   test("control: skipSystemTurns=false sends the same noise to the service", async () => {
     const r = await scenario(svc, "ow-noise-remote-off", { skipSystemTurns: false });
-    expect(r.skipped).toBe(0);
+    expect(r.skipped).toBe(0); // the client sent everything
     const eps = JSON.stringify(r.episodes);
-    expect(eps).toContain("[OpenClaw heartbeat poll]");
-    expect(eps).toContain("NO_REPLY — 3:12 PM");
-    expect(r.nodes.some((n) => /heartbeat monitor scratch|Saved today.s notes|^\s*NO_REPLY/.test(n.content))).toBe(true);
+    // sharpwave main stores the noise; a server with its own guard (sharpwave
+    // engram/skip-heartbeat-noise) answers "Skipped: system-noise" and audits it.
+    const auditPath = join(svc.root, "audit", "audit.jsonl");
+    const serverGuarded = existsSync(auditPath) && readFileSync(auditPath, "utf8").includes("skipped system-noise");
+    if (serverGuarded) {
+      expect(eps).not.toContain("NO_REPLY — 3:12 PM");
+    } else {
+      expect(eps).toContain("[OpenClaw heartbeat poll]");
+      expect(eps).toContain("NO_REPLY — 3:12 PM");
+      expect(r.nodes.some((n) => /heartbeat monitor scratch|Saved today.s notes|^\s*NO_REPLY/.test(n.content))).toBe(true);
+    }
   }, 30_000);
 });
 
