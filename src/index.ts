@@ -45,6 +45,7 @@ import {
 } from "./remote/settings.js";
 import { NoisePairTracker, classifySystemTurn, isHeartbeatSessionKey, resolveSystemNoiseSettings, type InputProvenanceLike } from "./system-noise.js";
 import { registerRemoteMode, type RemoteRuntime } from "./remote/register.js";
+import { AgentRoster, isDynamicAgents, type AutoAgentsConfig, type AgentsSpec } from "./remote/agents.js";
 import { BRAIN_TOOL_OUTPUT_SCHEMA, brainToolResult } from "./tool-result.js";
 import type { BrainConnectionInfo } from "./settings-contract.js";
 
@@ -54,8 +55,9 @@ import type { BrainConnectionInfo } from "./settings-contract.js";
 // concerns (the MCP server pins one agent per process; openwave serves many).
 // They stay in openwave's own config type rather than being pushed into core.
 
-type OpenwaveConfig = core.BrainConfig & RemoteConfigFields & {
+type OpenwaveConfig = core.BrainConfig & RemoteConfigFields & Omit<AutoAgentsConfig, "agents"> & {
   enabled: boolean;
+  /** Explicit list, or "*" = every agent in OpenClaw's config (see src/remote/agents.ts). Normalized to string[] for local mode. */
   agents: string[];
   // Per-agent-id overrides for the flat tunables below, keyed by OpenClaw
   // agent id. Written by the Control UI settings page (see
@@ -630,6 +632,14 @@ export default definePluginEntry({
       ...brainSettings,
       enabled: rawPluginConfig.enabled !== false,
     };
+    // agents: "*" / autoAgents. Remote mode resolves the roster live per turn;
+    // local mode snapshots it here (local brains are opened in-process at register).
+    const agentsSpec: AgentsSpec = (brainSettings.agents as unknown as AgentsSpec | undefined) ?? config.agents;
+    const dynamicAgents = isDynamicAgents({ agents: agentsSpec, autoAgents: config.autoAgents });
+    const rosterCfg = { agents: agentsSpec, autoAgents: config.autoAgents, excludeAgents: config.excludeAgents };
+    if (dynamicAgents || (config.excludeAgents?.length ?? 0) > 0) {
+      config.agents = new AgentRoster(rosterCfg, () => api.runtime?.config?.current?.()).ids();
+    }
     const baseLog = api.logger ?? { info: () => {}, warn: () => {}, error: () => {} };
     const log: { info: (msg: string) => void; warn: (msg: string) => void; error: (msg: string) => void; debug?: (msg: string) => void } = {
       info: (m) => baseLog.info(m),
@@ -671,6 +681,9 @@ export default definePluginEntry({
     // agent, which would silently read/write main's brain for an unknown caller, so it is not
     // used here: an unidentifiable or unserved caller is refused instead.
     type ToolContextLike = { agentId?: string; sessionKey?: string; sessionId?: string } | undefined;
+    // Remote mode swaps these for the live roster (agents: "*" re-reads OpenClaw's config).
+    let isServed = (id: string): boolean => config.agents.includes(id);
+    let servedIds = (): string[] => config.agents;
     const resolveToolAgent = (tc: ToolContextLike): { agentId: string } | { error: string } => {
       let candidate = tc?.agentId;
       if (!candidate) {
@@ -681,7 +694,7 @@ export default definePluginEntry({
       }
       if (!candidate && tc?.sessionKey?.startsWith("agent:")) candidate = tc.sessionKey.split(":")[1];
       if (!candidate) return { error: "openwave: cannot determine which agent is calling this tool, so it refused to touch any brain." };
-      if (!config.agents.includes(candidate)) return { error: `openwave is not serving agent "${candidate}" (plugins.entries.openwave.config.agents), so it refused to touch its brain.` };
+      if (!isServed(candidate)) return { error: `openwave is not serving agent "${candidate}" (plugins.entries.openwave.config.agents), so it refused to touch its brain.` };
       return { agentId: candidate };
     };
 
@@ -691,15 +704,17 @@ export default definePluginEntry({
     // no local brain.db is opened, no local timers are armed, and the
     // openwave:consolidation host cron is never registered.
     if (resolveBrainMode(config) === "remote") {
-      const rt = registerRemoteMode(api, config, log, {
+      const rt = registerRemoteMode(api, { ...config, agents: dynamicAgents ? "*" : (Array.isArray(agentsSpec) ? agentsSpec : config.agents) }, log, {
         resolveToolAgent,
-        resolveAgentId: (event, hookCtx) => resolveAgentId(event, hookCtx, config.agents),
+        resolveAgentId: (event, hookCtx) => resolveAgentId(event, hookCtx, servedIds()),
         recordSessionAgent,
         clearSessionAgent,
         contextOptsFor,
         stripControlDirectives,
       });
       remoteRuntime = rt;
+      isServed = rt.served;
+      servedIds = rt.servedIds;
       try {
         registerPersonaSettingsFeature(api, config, log, () => rt.connectionInfo());
       } catch (err) {
@@ -708,6 +723,7 @@ export default definePluginEntry({
       return;
     }
     remoteRuntime = null;
+    if (dynamicAgents) log.info(logFields({ op: "agents.roster", outcome: "snapshot", brainMode: "local", agents: config.agents.join(","), note: 'agents:"*" in local mode is resolved at register; new agents need a plugin reload (remote mode picks them up live)' }));
 
     // System-noise gate (local mode). Same classifier as remote mode: skipped
     // turns get no episode and no extraction-queue entry, so neither the

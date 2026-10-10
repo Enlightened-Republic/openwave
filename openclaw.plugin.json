@@ -1,7 +1,7 @@
 {
   "id": "openwave",
   "name": "openwave",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Autonomic wake-up memory for OpenClaw agents. Injects identity, goals and query-relevant recall into every turn, and runs the sleep system (consolidation, awake replay, extraction) in-process. Powered by sharpwave-core.",
   "activation": {
     "onStartup": true
@@ -31,14 +31,24 @@
     "additionalProperties": false,
     "properties": {
       "agents": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        },
+        "anyOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "type": "string",
+            "enum": [
+              "*"
+            ]
+          }
+        ],
         "default": [
           "main"
         ],
-        "description": "OpenClaw agent ids openwave serves. Each routes to ~/.sharpwave/<id>/brain.db."
+        "description": "OpenClaw agent ids openwave serves, or \"*\" for every agent in the OpenClaw config (remote mode picks up new agents live, no restart). Local mode routes each to ~/.sharpwave/<id>/brain.db."
       },
       "contextBudget": {
         "type": "number",
@@ -246,6 +256,33 @@
         "minimum": 100,
         "maximum": 30000,
         "description": "Remote mode: per-call budget for the brain service. If the service does not answer in time the turn proceeds with no recall injected."
+      },
+      "autoAgents": {
+        "type": "boolean",
+        "default": false,
+        "description": "Same as agents: \"*\"."
+      },
+      "excludeAgents": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "Agent ids openwave never serves (applies to agents: \"*\" and explicit lists)."
+      },
+      "autoProvision": {
+        "type": "boolean",
+        "default": false,
+        "description": "Remote mode: when a served agent has no token file, provision its brain + token on the brain service (brain_provision_agent) and write brainTokenFile ({agentId} required)."
+      },
+      "provisionTokenFile": {
+        "type": "string",
+        "description": "Path to a brain-service token with the narrow `provision` scope (or admin), used only for autoProvision. Never logged."
+      },
+      "rosterPollMs": {
+        "type": "number",
+        "default": 30000,
+        "description": "Remote + agents:\"*\"/autoProvision: how often to re-read the agent list in the background (ms). 0 = only on gateway start and per turn."
       }
     }
   },
