@@ -1,5 +1,5 @@
 // Unit tests: roster resolution, exclusion, token-file writing, provisioner backoff/misconfig.
-import { mkdtempSync, readFileSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, existsSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -44,6 +44,26 @@ describe("token file + provisioner", () => {
     writeTokenFileSecure(p, "swt_abc");
     expect(readFileSync(p, "utf8")).toBe("swt_abc\n");
     if (process.platform !== "win32") expect(statSync(p).mode & 0o777).toBe(0o600);
+  });
+
+  test("Windows: temp file is locked with icacls (user + SYSTEM, no inheritance) before the rename", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ow-tok-"));
+    const p = join(dir, "gano.token");
+    const calls: Array<[string, string]> = [];
+    writeTokenFileSecure(p, "swt_win", { platform: "win32", user: "wubbu", acl: (f, u) => { calls.push([f, u]); expect(existsSync(p)).toBe(false); return { ok: true }; } });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![0]).toMatch(/gano\.token\..*\.tmp$/);
+    expect(calls[0]![1]).toBe("wubbu");
+    expect(readFileSync(p, "utf8")).toBe("swt_win\n");
+  });
+
+  test("Windows: if icacls fails, no token file (or temp file) is left behind and it throws", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ow-tok-"));
+    const p = join(dir, "gano.token");
+    expect(() => writeTokenFileSecure(p, "swt_win", { platform: "win32", user: "wubbu", acl: () => ({ ok: false, error: "denied" }) })).toThrow(/ACL/);
+    expect(readdirSync(dir)).toEqual([]);
+    expect(() => writeTokenFileSecure(p, "swt_win", { platform: "win32", user: "" })).toThrow(/USERNAME/);
+    expect(readdirSync(dir)).toEqual([]);
   });
 
   test("misconfigured provisioner: clear errors, no throw, no token file", async () => {

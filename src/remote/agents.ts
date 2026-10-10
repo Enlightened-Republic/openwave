@@ -14,8 +14,9 @@
 // SECURITY: the provisioner token and every minted token are never logged or
 // returned; only token ids / statuses are surfaced.
 
-import { existsSync, mkdirSync, renameSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, writeFileSync, chmodSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
+import { spawnSync } from "node:child_process";
 import { RemoteBrainClient, RemoteBrainError } from "./client.js";
 import { expandTokenPath, loadToken, redact, type RemoteConfigFields } from "./settings.js";
 
@@ -100,16 +101,46 @@ export type ProvisionOutcome =
   | { status: "already-provisioned"; tokenIds: string[] }
   | { status: "error"; error: string; retryable: boolean };
 
-/** Write a token file atomically with owner-only permissions. */
-export function writeTokenFileSecure(path: string, token: string): void {
+export type AclRunner = (file: string, user: string) => { ok: boolean; error?: string };
+
+/** Windows: owner-only ACL on one file via icacls (argv, no shell). Same grants as the runbook's tokens-folder lock. */
+export const icaclsOwnerOnly: AclRunner = (file, user) => {
+  const r = spawnSync("icacls", [file, "/inheritance:r", "/grant:r", `${user}:F`, "*S-1-5-18:F"], { windowsHide: true, encoding: "utf8", timeout: 10_000 });
+  if (r.error) return { ok: false, error: String(r.error.message) };
+  if (r.status !== 0) return { ok: false, error: `icacls exit ${r.status}: ${(r.stderr || r.stdout || "").trim().slice(0, 200)}` };
+  return { ok: true };
+};
+
+export interface SecureWriteOptions {
+  platform?: NodeJS.Platform;
+  acl?: AclRunner;
+  user?: string;
+}
+
+/**
+ * Write a token file atomically with owner-only permissions.
+ *   POSIX: created 0600 (dir 0700), then renamed into place.
+ *   Windows: mode bits are ignored, so the temp file is locked with icacls
+ *   (inheritance removed; only the current user + SYSTEM) BEFORE the rename,
+ *   so the final path never exists with a broader ACL. This doesn't depend on
+ *   the tokens folder having been locked (runbook 11.4 still does that too).
+ *   If icacls fails, the temp file is deleted and this throws — a token file
+ *   that might be world-readable is never left behind.
+ */
+export function writeTokenFileSecure(path: string, token: string, opts: SecureWriteOptions = {}): void {
+  const platform = opts.platform ?? process.platform;
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  // POSIX: 0600. Windows: mode bits are ignored; the file inherits the tokens
-  // folder ACL, which the runbook restricts with
-  //   icacls <tokens> /inheritance:r /grant:r "%USERNAME%:(OI)(CI)F" "SYSTEM:(OI)(CI)F"
-  // so a file created inside it is owner(+SYSTEM)-only without spawning icacls here.
   writeFileSync(tmp, token + "\n", { mode: 0o600, flag: "wx" });
   try { chmodSync(tmp, 0o600); } catch { /* windows */ }
+  if (platform === "win32") {
+    const user = opts.user ?? process.env["USERNAME"] ?? "";
+    const r = user ? (opts.acl ?? icaclsOwnerOnly)(tmp, user) : { ok: false, error: "USERNAME is not set" };
+    if (!r.ok) {
+      try { unlinkSync(tmp); } catch { /* */ }
+      throw new Error(`could not restrict token file ACL (${r.error}); token not written`);
+    }
+  }
   renameSync(tmp, path);
 }
 
@@ -196,7 +227,14 @@ export class Provisioner {
       }
       const out = JSON.parse(r.text) as { status: string; token?: string; tokenId?: string; tokenIds?: string[] };
       if ((out.status === "provisioned" || out.status === "rotated") && typeof out.token === "string") {
-        writeTokenFileSecure(path, out.token);
+        try {
+          writeTokenFileSecure(path, out.token);
+        } catch (we) {
+          const msg = `minted ${out.tokenId} but could not write ${path} securely: ${redact(String((we as Error).message ?? we))}. ` +
+            `Fix the tokens folder, then sharpwave-server token revoke ${out.tokenId} so openwave can re-provision.`;
+          this.log.error(this.fmt({ agentId, op: "provision", outcome: "token_write_failed", error: msg }));
+          return this.fail(agentId, msg, false);
+        }
         this.backoff.delete(agentId);
         this.log.info(this.fmt({ agentId, op: "provision", outcome: out.status, tokenId: out.tokenId, tokenFile: path }));
         return { status: out.status, tokenId: out.tokenId ?? "?" };

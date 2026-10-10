@@ -260,8 +260,8 @@ brain_workspace, brain_docs`.
   is served on its first turn, with **no gateway restart**.
 - With `autoProvision`, an agent that has no token file triggers `brain_provision_agent` on sharpwave-server. The
   server creates the agent's brain and mints a token with its own configured scopes (default `read,write,shared-write`,
-  never admin). OpenWave writes the token file atomically (POSIX `0600`; on Windows it inherits the tokens folder ACL,
-  so lock that folder with `icacls`) and connects right away.
+  never admin). OpenWave writes the token file atomically (POSIX `0600`; on Windows the temp file is locked with `icacls` to
+  the current user + SYSTEM before it is renamed into place, and nothing is written if that fails) and connects right away.
 - `provisionTokenFile` should hold a token minted with **only** the `provision` scope
   (`sharpwave-server token mint --agent openwave-provisioner --scopes provision`). That scope can't read or write any
   brain, and the server accepts it only on 127.0.0.1.
