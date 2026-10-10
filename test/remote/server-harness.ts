@@ -35,7 +35,7 @@ export async function freePort(): Promise<number> {
   });
 }
 
-export type Scope = "read" | "write" | "shared-write" | "admin";
+export type Scope = "read" | "write" | "shared-write" | "admin" | "provision";
 
 export type RunningServer = {
   url: string;

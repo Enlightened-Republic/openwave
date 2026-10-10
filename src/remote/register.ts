@@ -32,6 +32,7 @@ import {
   type TokenSource,
 } from "./settings.js";
 import type { BrainConnectionInfo } from "../settings-contract.js";
+import { AgentRoster, Provisioner, isDynamicAgents, type AgentsSpec, type AutoAgentsConfig } from "./agents.js";
 import { NoisePairTracker, classifySystemTurn, isHeartbeatSessionKey, resolveSystemNoiseSettings, type InputProvenanceLike, type TurnSignals } from "../system-noise.js";
 
 /** Local-only features that are switched off in remote mode (listed in the PR / README). */
@@ -206,11 +207,19 @@ export type RemoteRuntime = {
   /** Turns skipped by the system-noise gate since register (diagnostics/tests). */
   noiseSkipped: () => number;
   stop: () => Promise<void>;
-};
+  /** True when openwave serves this agent right now (dynamic mode re-reads OpenClaw's live config). */
+  served: (agentId: string) => boolean;
+  /** Current served agent ids. */
+  servedIds: () => string[];
+  /** Connect (provisioning first when enabled and needed) an agent. Never throws. */
+  ensureAgent: (agentId: string) => Promise<boolean>;
+  /** Provision + connect every served agent that has no connection yet (gateway_start + roster poll). */
+  syncRoster: () => Promise<void>;
+}
 
 export function registerRemoteMode(
   api: Api,
-  config: RemoteConfigFields & core.BrainConfig & { agents: string[]; skipSystemTurns?: boolean; systemTurnPatterns?: string[] },
+  config: RemoteConfigFields & core.BrainConfig & Omit<AutoAgentsConfig, "agents"> & { agents: AgentsSpec; skipSystemTurns?: boolean; systemTurnPatterns?: string[] },
   log: Log,
   helpers: RemoteHelpers,
 ): RemoteRuntime {
@@ -232,22 +241,36 @@ export function registerRemoteMode(
   };
   const warn = new WarnLimiter();
   const conns = new Map<string, AgentConn>();
-  const timers = { harvest: null as NodeJS.Timeout | null, health: null as NodeJS.Timeout | null };
+  const timers = { harvest: null as NodeJS.Timeout | null, health: null as NodeJS.Timeout | null, roster: null as NodeJS.Timeout | null };
   let stopped = false;
 
   // ── Token per served agent ────────────────────────────────────────────────
+  // Explicit mode (agents: [...]) connects the listed agents once, exactly as
+  // before. Dynamic mode (agents: "*") resolves the roster from OpenClaw's live
+  // config on demand and connects agents lazily, so a new agent works on its
+  // first turn without a gateway restart.
+  const roster = new AgentRoster(config, () => api.runtime?.config?.current?.());
+  const dynamic = isDynamicAgents(config);
   const singleToken = tokenIsSingleAgent(config);
-  config.agents.forEach((agentId, i) => {
-    if (singleToken && i > 0) {
+  const provisioner = new Provisioner(config, settings.url, settings.timeoutMs, log, logFields);
+  const served = (agentId: string): boolean => roster.has(agentId);
+
+  const connect = (agentId: string, i: number): void => {
+    if (singleToken && (dynamic || i > 0)) {
       conns.set(agentId, { agentId, client: null, tokenSource: "none", status: "misconfigured",
         lastError: "one token can only serve one agent; use brainTokenFile with {agentId} to serve several" });
-      log.error(logFields({ agentId, op: "remote.token", outcome: "misconfigured", note: `remote mode serves only "${config.agents[0]}" with a single token; this agent gets no memory. Use brainTokenFile with {agentId}.` }));
+      log.error(logFields({ agentId, op: "remote.token", outcome: "misconfigured", note: dynamic
+        ? `agents:"*" needs brainTokenFile with {agentId}; this agent gets no memory.`
+        : `remote mode serves only "${(config.agents as string[])[0]}" with a single token; this agent gets no memory. Use brainTokenFile with {agentId}.` }));
       return;
     }
     const t = loadToken(config, agentId);
     if (!t.ok) {
       conns.set(agentId, { agentId, client: null, tokenSource: t.source, status: "misconfigured", lastError: t.reason });
-      log.error(logFields({ agentId, op: "remote.token", outcome: "error", tokenSource: t.source, error: t.reason }));
+      // A missing file that autoProvision will create is not an error yet.
+      if (!(provisioner.enabled() && provisioner.needsToken(agentId))) {
+        log.error(logFields({ agentId, op: "remote.token", outcome: "error", tokenSource: t.source, error: t.reason }));
+      }
       return;
     }
     if (t.source === "inline") {
@@ -259,7 +282,44 @@ export function registerRemoteMode(
       status: "unknown",
       client: new RemoteBrainClient({ url: settings.url, token: t.token, timeoutMs: settings.timeoutMs, agentId, clientVersion: "openwave-remote" }),
     });
-  });
+  };
+  roster.ids().forEach((agentId, i) => connect(agentId, i));
+
+  const ensuring = new Map<string, Promise<boolean>>();
+  const ensureAgent = (agentId: string): Promise<boolean> => {
+    if (conns.get(agentId)?.client) return Promise.resolve(true);
+    if (!served(agentId)) return Promise.resolve(false);
+    const running = ensuring.get(agentId);
+    if (running) return running;
+    const p = (async () => {
+      try {
+        if (provisioner.enabled() && provisioner.needsToken(agentId)) {
+          const r = await provisioner.ensure(agentId, roster.name(agentId));
+          if (r.status === "error") {
+            const c = conns.get(agentId);
+            conns.set(agentId, { agentId, client: null, tokenSource: c?.tokenSource ?? "file", status: "misconfigured", lastError: `auto-provision: ${r.error}` });
+            return false;
+          }
+        }
+        const isNew = !conns.has(agentId) || !conns.get(agentId)!.client;
+        connect(agentId, dynamic ? 0 : Math.max(0, (config.agents as string[]).indexOf(agentId)));
+        const ok = !!conns.get(agentId)?.client;
+        if (ok && isNew) log.info(logFields({ agentId, op: "agent.activated", outcome: "ok", note: "memory active for this agent (no gateway restart needed)" }));
+        return ok;
+      } catch (err) {
+        log.warn(logFields({ agentId, op: "agent.activate", outcome: "error", error: redact(String(err)) }));
+        return false;
+      }
+    })().finally(() => ensuring.delete(agentId));
+    ensuring.set(agentId, p);
+    return p;
+  };
+  const syncRoster = async (): Promise<void> => {
+    for (const agentId of roster.ids()) {
+      if (stopped) return;
+      if (!conns.get(agentId)?.client) await ensureAgent(agentId);
+    }
+  };
 
   const reportFailure = (agentId: string, op: string, e: RemoteBrainError) => {
     const c = conns.get(agentId);
@@ -323,6 +383,7 @@ export function registerRemoteMode(
         async execute(_toolCallId: string, params: Record<string, unknown> | undefined) {
           const who = helpers.resolveToolAgent(toolContext);
           if ("error" in who) return brainToolResult(who.error, { isError: true });
+          await ensureAgent(who.agentId);
           const conn = conns.get(who.agentId);
           if (!conn?.client) return brainToolResult(`openwave (remote mode): no brain service connection for agent "${who.agentId}": ${conn?.lastError ?? "not configured"}`, { isError: true });
           const r = await call(who.agentId, `tool.${name}`, name, params ?? {});
@@ -350,8 +411,9 @@ export function registerRemoteMode(
   try {
     api.registerMemoryCorpusSupplement?.({
       async search(params: { query: string; maxResults?: number; agentSessionKey?: string }) {
-        const agentId = core.agentIdFromKey(params.agentSessionKey ?? "", config.agents);
-        if (!config.agents.includes(agentId)) return [];
+        const agentId = core.agentIdFromKey(params.agentSessionKey ?? "", roster.ids());
+        if (!served(agentId)) return [];
+        await ensureAgent(agentId);
         const r = await call(agentId, "memoryCorpusSupplement.search", "brain_query", {
           query: params.query, limit: params.maxResults ?? 5, format: "json", scope: settings.sharedRecall ? "all" : "private",
         });
@@ -502,6 +564,10 @@ export function registerRemoteMode(
     startupCheck: null,
     flushEpisodes: async () => { while (pendingEpisodes.size) await Promise.all([...pendingEpisodes]); },
     noiseSkipped: () => noiseSkipped,
+    served,
+    servedIds: () => roster.ids(),
+    ensureAgent,
+    syncRoster,
     connectionInfo: () => {
       const all = [...conns.values()];
       const first = all[0];
@@ -527,6 +593,8 @@ export function registerRemoteMode(
       ]);
       if (timers.harvest) { clearInterval(timers.harvest); timers.harvest = null; }
       if (timers.health) { clearTimeout(timers.health); timers.health = null; }
+      if (timers.roster) { clearInterval(timers.roster); timers.roster = null; }
+      await provisioner.close();
       for (const c of conns.values()) await c.client?.close().catch(() => {});
     },
   };
@@ -554,12 +622,25 @@ export function registerRemoteMode(
     if (timers.harvest) clearInterval(timers.harvest);
     if (config.llmExtractionEnabled) {
       timers.harvest = setInterval(() => {
-        for (const agentId of config.agents) void harvestToService(agentId, "harvest_tick");
+        for (const agentId of roster.ids()) void harvestToService(agentId, "harvest_tick");
       }, HARVEST_INTERVAL_MS);
       timers.harvest.unref?.();
     }
     // Non-blocking: gateway start never waits on the brain service.
     runtime.startupCheck = runStartupCheck();
+    if (dynamic || provisioner.enabled()) {
+      // Provision/connect agents that appeared while the gateway was down, then
+      // keep polling the live roster so an agent added later is provisioned
+      // before its first message (per-turn ensureAgent covers the gap).
+      void syncRoster();
+      const pollMs = Number(config.rosterPollMs ?? 30_000);
+      if (timers.roster) clearInterval(timers.roster);
+      if (Number.isFinite(pollMs) && pollMs > 0) {
+        timers.roster = setInterval(() => void syncRoster(), Math.max(1_000, pollMs));
+        timers.roster.unref?.();
+      }
+      log.info(logFields({ op: "agents.roster", outcome: "dynamic", agents: roster.ids().join(","), excluded: (config.excludeAgents ?? []).join(","), autoProvision: provisioner.enabled(), pollMs }));
+    }
     log.info(logFields({ op: "gateway_start", outcome: "ready", brainMode: "remote", localSleep: false, consolidationCron: false }));
   });
 
@@ -588,7 +669,7 @@ export function registerRemoteMode(
 
   api.on("session_start", async (event: { sessionId?: string; sessionKey?: string }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string }) => {
     const agentId = helpers.resolveAgentId(event, hookCtx);
-    if (!config.agents.includes(agentId)) return;
+    if (!served(agentId)) return;
     recordHook(agentId, hookCtx, event);
     const sessionKey = event?.sessionKey ?? hookCtx?.sessionKey ?? "";
     if (noise.enabled && isHeartbeatSessionKey(sessionKey)) return; // isolated heartbeat session: no markers
@@ -597,7 +678,7 @@ export function registerRemoteMode(
 
   api.on("session_end", async (event: { sessionId?: string; sessionKey?: string }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string }) => {
     const agentId = helpers.resolveAgentId(event, hookCtx);
-    if (!config.agents.includes(agentId)) return;
+    if (!served(agentId)) return;
     const endKey = event?.sessionKey ?? hookCtx?.sessionKey ?? "";
     if (!(noise.enabled && isHeartbeatSessionKey(endKey))) appendEpisodeRemote(agentId, endKey, "tool", `[session end: ${endKey}]`, 0.1);
     await harvestToService(agentId, "session_end");
@@ -607,7 +688,7 @@ export function registerRemoteMode(
 
   api.on("agent_turn_prepare", async (_event: unknown, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string }) => {
     const agentId = helpers.resolveAgentId(undefined, hookCtx);
-    if (!config.agents.includes(agentId)) return;
+    if (!served(agentId)) return;
     recordHook(agentId, hookCtx);
   }, { priority: 0, timeoutMs: 200 });
 
@@ -615,7 +696,7 @@ export function registerRemoteMode(
     try {
       const t0 = Date.now();
       const agentId = helpers.resolveAgentId(undefined, hookCtx);
-      if (!config.agents.includes(agentId)) return;
+      if (!served(agentId)) return;
       if (event?.kind === "heartbeat") return;
       const sessionKey = hookCtx?.sessionKey ?? "";
       if (sessionKey.endsWith(":heartbeat")) return;
@@ -631,6 +712,7 @@ export function registerRemoteMode(
         }
       }
 
+      await ensureAgent(agentId);
       const conn = conns.get(agentId);
       if (!conn?.client) {
         return surface === "voice" ? undefined : { appendSystemContext: REMOTE_DOWN_NOTICE };
@@ -666,9 +748,10 @@ export function registerRemoteMode(
   api.on("message_received", async (event: { content?: string; text?: string; sessionKey?: string; agentId?: string; senderId?: string; from?: string }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string; channelId?: string }) => {
     try {
       const agentId = helpers.resolveAgentId(event, hookCtx);
-      if (!config.agents.includes(agentId)) return;
+      if (!served(agentId)) return;
       const content = event?.content ?? event?.text ?? "";
       if (!content) return;
+      await ensureAgent(agentId);
       const sessionKey = event?.sessionKey ?? hookCtx?.sessionKey ?? "";
       const sessionId = hookCtx?.sessionId ?? sessionKey;
       recordHook(agentId, hookCtx, event);
@@ -692,7 +775,7 @@ export function registerRemoteMode(
   api.on("llm_output", async (event: { assistantTexts?: string[]; content?: string; prompt?: string }, hookCtx: AgentHookCtx) => {
     try {
       const agentId = helpers.resolveAgentId(undefined, hookCtx);
-      if (!config.agents.includes(agentId)) return;
+      if (!served(agentId)) return;
       const texts = event?.assistantTexts ?? (event?.content ? [event.content] : []);
       const content = helpers.stripControlDirectives(texts.join("\n").trim());
       if (!content) return;
@@ -713,7 +796,7 @@ export function registerRemoteMode(
   api.on("after_compaction", async (event: { compactedCount?: number; messageCount?: number }, hookCtx: AgentHookCtx) => {
     try {
       const agentId = helpers.resolveAgentId(undefined, hookCtx);
-      if (!config.agents.includes(agentId)) return;
+      if (!served(agentId)) return;
       const sessionKey = hookCtx?.sessionKey ?? hookCtx?.sessionId ?? "";
       if (noise.enabled && isHeartbeatSessionKey(sessionKey)) return; // isolated heartbeat session: no marker
       appendEpisodeRemote(agentId, sessionKey, "tool", `[compaction: ${event?.compactedCount ?? 0} of ${event?.messageCount ?? 0} messages compacted]`, 0.1);
@@ -721,7 +804,7 @@ export function registerRemoteMode(
   });
 
   log.info(logFields({
-    op: "register", outcome: "ok", brainMode: "remote", url: settings.url, agents: config.agents.length,
+    op: "register", outcome: "ok", brainMode: "remote", url: settings.url, agents: dynamic ? `* (${roster.ids().length})` : roster.ids().length,
     tools: REMOTE_TOOL_NAMES.length, sharedRecall: settings.sharedRecall, timeoutMs: settings.timeoutMs,
     tokenSources: [...conns.values()].map((c) => `${c.agentId}:${c.tokenSource}`).join(","),
     disabled: REMOTE_DISABLED_FEATURES.length,

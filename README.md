@@ -241,6 +241,36 @@ dopamine, VALOR scoring, subconscious tick, compaction handling, temporal edges 
 extraction, and the tools `brain_update_self_model, brain_reflect, brain_generate_skill,
 brain_workspace, brain_docs`.
 
+### Automatic agents and provisioning (remote mode, 0.2.0+)
+
+```json5
+{
+  agents: "*",                    // every agent in OpenClaw's config (or autoAgents: true)
+  excludeAgents: ["scratch"],     // never served
+  brainMode: "remote",
+  brainTokenFile: "C:\\Users\\you\\.sharpwave\\tokens\\{agentId}.token",  // must contain {agentId}
+  autoProvision: true,
+  provisionTokenFile: "C:\\Users\\you\\.sharpwave\\tokens\\_provisioner.token",
+  rosterPollMs: 30000,
+}
+```
+
+- The agent set is read from OpenClaw's **live** config (`api.runtime.config.current()`, `agents.entries` or
+  `agents.list`) on each turn, at `gateway_start`, and every `rosterPollMs`. An agent added with `openclaw agents add`
+  is served on its first turn, with **no gateway restart**.
+- With `autoProvision`, an agent that has no token file triggers `brain_provision_agent` on sharpwave-server. The
+  server creates the agent's brain and mints a token with its own configured scopes (default `read,write,shared-write`,
+  never admin). OpenWave writes the token file atomically (POSIX `0600`; on Windows the temp file is locked with `icacls` to
+  the current user + SYSTEM before it is renamed into place, and nothing is written if that fails) and connects right away.
+- `provisionTokenFile` should hold a token minted with **only** the `provision` scope
+  (`sharpwave-server token mint --agent openwave-provisioner --scopes provision`). That scope can't read or write any
+  brain, and the server accepts it only on 127.0.0.1.
+- Idempotent: agents with a token file are never re-provisioned. If the service already has a token for an agent whose
+  file is missing, OpenWave logs `token_file_missing` and doesn't mint a second one.
+- Service down: the turn proceeds without memory, and provisioning retries per agent with backoff (2 s up to 5 min).
+  Tokens are never logged.
+- An explicit `agents: [...]` list behaves exactly as before.
+
 ## Tools
 
 openwave registers all **16** `brain_*` tools:
