@@ -114,7 +114,7 @@ const CONTINUITY_TOOLS = new Set<string>(["brain_record_decision", "brain_update
 export const RECALL_BLOCK_HEADER =
   "[BRAIN: on your mind — ·gist items are rough unattributed fragments; do not assert them as facts about Hailey without checking]";
 export const REMOTE_BANNER =
-  "[Xanima remote] Memories from the Xanima brain service (private + shared + subscribed rooms) are pre-loaded below with their age; (?) = low confidence; [type·room·agent] = shared by that agent in that room. Tools: brain_query (as_of = what you believed then), brain_write, brain_retract / brain_supersede (give a reason), brain_status, brain_record_decision / brain_set_goal, brain_plan / brain_commit, brain_briefing / brain_changes to catch up, brain_focus to keep a topic out of recall, brain_room / brain_publish / brain_room_query to share.";
+  "[Xanima remote] Memories (private, shared, subscribed rooms) are pre-loaded below with their age; (?) = low confidence; [type·room·agent] = from a room. Tools: brain_query (as_of = past beliefs), brain_write, brain_retract / brain_supersede (with a reason), brain_status, brain_record_decision / brain_set_goal, brain_plan / brain_commit, brain_briefing / brain_changes, brain_focus, brain_room / brain_publish.";
 export const REMOTE_DOWN_NOTICE =
   "[Xanima remote] Brain service unavailable this turn — no memories were loaded; brain_* tools may fail until it recovers.";
 /** How long a remote brain_status result is reused for the injection footer. */
