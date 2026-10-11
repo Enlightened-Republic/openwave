@@ -4,8 +4,8 @@
   "legacyPluginIds": [
     "openwave"
   ],
-  "version": "0.4.0",
-  "description": "Xanima (formerly openwave): autonomic memory and agent continuity for OpenClaw agents. Injects identity, goals and query-relevant recall (with confidence and relative-time labels) into every turn, and runs the sleep system. Powered by xanima-core. 0.2.0 adds a decision ledger, versioned goals with drift detection, alignment notes and goal triggers; 0.3.0 adds reflection, experience replay, hypotheses / questions / assumptions, commitments and plans (park / resume briefings) and meta-tools; 0.4.0 adds the portable Soul Package (brain_export_soul for the agent's own brain, and the brain_review queue for imported identity / goal changes).",
+  "version": "0.5.0",
+  "description": "Xanima (formerly openwave): autonomic memory and agent continuity for OpenClaw agents. Injects identity, goals and query-relevant recall (with confidence and relative-time labels) into every turn, and runs the sleep system. Powered by xanima-core. 0.2.0 adds a decision ledger, versioned goals with drift detection, alignment notes and goal triggers; 0.3.0 adds reflection, experience replay, hypotheses / questions / assumptions, commitments and plans (park / resume briefings) and meta-tools; 0.4.0 adds the portable Soul Package (brain_export_soul for the agent's own brain, and the brain_review queue for imported identity / goal changes); 0.5.0 adds shared rooms on the brain service (brain_room / brain_publish / brain_room_query / brain_subscribe), brain_focus and injection categories, and the poisoning quarantine.",
   "activation": {
     "onStartup": true
   },
@@ -46,7 +46,13 @@
       "brain_conflicts",
       "brain_briefing",
       "brain_forget_impact",
-      "brain_export_soul"
+      "brain_export_soul",
+      "brain_focus",
+      "brain_room",
+      "brain_publish",
+      "brain_unpublish",
+      "brain_room_query",
+      "brain_subscribe"
     ]
   },
   "configSchema": {
@@ -464,6 +470,33 @@
         "minimum": 400,
         "maximum": 12000,
         "description": "Character cap for brain_changes / brain_conflicts / brain_briefing / brain_forget_impact / brain_list_open."
+      },
+      "quarantine": {
+        "type": "string",
+        "enum": ["off", "log", "enforce"],
+        "default": "log",
+        "description": "0.5.0 poisoning quarantine for identity / value / goal / rule writes from untrusted sources (tool output, other agents, imports, injection-looking text). log = record and still apply (measure false positives first); enforce = hold for review (brain_review); off = no checks. Local mode; on remote mode the brain service's own setting applies."
+      },
+      "injectionCategories": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "identity": { "type": "boolean", "description": "Header: identity line." },
+          "goals": { "type": "boolean", "description": "Header: active goals." },
+          "rules": { "type": "boolean", "description": "Header: operational rules (procedural block)." },
+          "recall": { "type": "boolean", "description": "Selective recall block." },
+          "decisions": { "type": "boolean", "description": "Decision nodes in recall." },
+          "rooms": { "type": "boolean", "description": "Subscribed room items in recall (remote mode)." },
+          "sensitive": { "type": "string", "enum": ["relevant", "never", "always"], "description": "Sensitive items: only when the turn names their topic (default), never, or always." }
+        },
+        "description": "0.5.0: switch injection categories. Unset keys stay on (sensitive: relevant). Local mode; the brain service has its own setting in remote mode."
+      },
+      "focusDefaultTtl": {
+        "type": "number",
+        "default": 3,
+        "minimum": 1,
+        "maximum": 50,
+        "description": "0.5.0: turns a brain_focus lasts when no ttl is given."
       }
     }
   },

@@ -94,19 +94,27 @@ export const REMOTE_TOOL_NAMES = [
   // Xanima 0.4.0 Soul Package: export of SELF only (agent-safe). brain_review (above) also carries the review-queue
   // mode; its accept / reject and brain_import_soul need an admin token on the service — import / merge stay CLI.
   "brain_export_soul",
+  // Xanima 0.5.0 rooms (context bus) + injection focus — served by xanima-server >= 0.5.0
+  "brain_room",
+  "brain_publish",
+  "brain_unpublish",
+  "brain_room_query",
+  "brain_subscribe",
+  "brain_focus",
 ] as const;
 
 /** Service plumbing (xanima-server >= 0.2.0): alignment note + goal triggers for this turn. Not exposed to the model. */
 export const TURN_CONTEXT_TOOL = "brain_turn_context";
 const CONTINUITY_TOOLS = new Set<string>(["brain_record_decision", "brain_update_decision_outcome", "brain_query_decisions", "brain_set_goal", "brain_update_goal", "brain_list_goals",
-  "brain_reflect", "brain_replay", "brain_hypothesis", "brain_question", "brain_list_open", "brain_commit", "brain_commitments", "brain_plan", "brain_changes", "brain_conflicts", "brain_briefing", "brain_forget_impact", "brain_export_soul"]);
+  "brain_reflect", "brain_replay", "brain_hypothesis", "brain_question", "brain_list_open", "brain_commit", "brain_commitments", "brain_plan", "brain_changes", "brain_conflicts", "brain_briefing", "brain_forget_impact", "brain_export_soul",
+  "brain_room", "brain_publish", "brain_unpublish", "brain_room_query", "brain_subscribe", "brain_focus"]);
 
 // Copied verbatim from xanima-core buildRecallContext so the injected block
 // is byte-identical in shape to local mode.
 export const RECALL_BLOCK_HEADER =
   "[BRAIN: on your mind — ·gist items are rough unattributed fragments; do not assert them as facts about Hailey without checking]";
 export const REMOTE_BANNER =
-  "[Xanima remote] Memories from the Xanima brain service (private + shared) are pre-loaded below with their age; (?) = low confidence. Tools: brain_query (as_of = what you believed then), brain_write, brain_retract / brain_supersede (give a reason), brain_status, brain_record_decision / brain_set_goal, brain_plan / brain_commit, brain_briefing / brain_changes to catch up.";
+  "[Xanima remote] Memories from the Xanima brain service (private + shared + subscribed rooms) are pre-loaded below with their age; (?) = low confidence; [type·room·agent] = shared by that agent in that room. Tools: brain_query (as_of = what you believed then), brain_write, brain_retract / brain_supersede (give a reason), brain_status, brain_record_decision / brain_set_goal, brain_plan / brain_commit, brain_briefing / brain_changes to catch up, brain_focus to keep a topic out of recall, brain_room / brain_publish / brain_room_query to share.";
 export const REMOTE_DOWN_NOTICE =
   "[Xanima remote] Brain service unavailable this turn — no memories were loaded; brain_* tools may fail until it recovers.";
 /** How long a remote brain_status result is reused for the injection footer. */
@@ -159,10 +167,10 @@ export class WarnLimiter {
 
 /** Mirrors sharpwave-server's published schema (SERVICE_TOOLS; pinned by test/remote/tool-results.test.ts): core's def minus writer_agent_id, plus visibility/scope/format. */
 function remoteToolSchema(name: string): { description: string; parameters: Record<string, unknown> } {
-  const base = BRAIN_TOOL_DEFS[name];
+  const base = BRAIN_TOOL_DEFS[name] ?? (core.ROOM_TOOL_DEFS as Record<string, { description: string; inputSchema: { properties?: Record<string, unknown>; required?: string[] } }>)[name];
   const props: Record<string, unknown> = { ...((base?.inputSchema?.properties as Record<string, unknown>) ?? {}) };
   delete props["writer_agent_id"];
-  delete props["agent"];
+  if (name !== "brain_room") delete props["agent"]; // brain_room's agent = the member to invite / revoke
   const vis = { type: "string", enum: ["private", "shared"], description: 'Which brain: "private" (yours, default) or "shared" (visible to every agent; writing needs the shared-write scope).' };
   if (name === "brain_query") {
     props["scope"] = { type: "string", enum: ["all", "private", "shared"], description: 'Which brains to search: "all" (default: private + shared), "private", or "shared".' };
@@ -196,10 +204,12 @@ function remoteToolSchema(name: string): { description: string; parameters: Reco
 }
 
 type QueryHit = {
-  brain: "private" | "shared"; id: string; type: string; label: string; content: string; score: number; writer: string | null;
+  brain: "private" | "shared" | "room"; id: string; type: string; label: string; content: string; score: number; writer: string | null;
   // Xanima 0.1.0 belief fields (absent on older services / beliefMetadata off)
   confidence?: string; confidence_score?: number | null; source_type?: string; created_at?: number;
   contradicted_at?: number | null; sensitivity?: string;
+  // Xanima 0.5.0 subscribed room items (brain "room")
+  room?: string; origin_node_id?: string | null;
 };
 
 export type RecallLabelOpts = { relativeTime?: boolean; beliefMetadata?: boolean; lowThreshold?: number; now?: number };
@@ -223,7 +233,7 @@ export function formatRecallBlock(hits: QueryHit[], surface: "voice" | "chat", e
   const cap = surface === "voice" ? 3 : rows.length;
   const contentMax = surface === "voice" ? 120 : 200;
   const lines = rows.slice(0, cap).map((h) => {
-    const tag = h.brain === "shared" ? "·shared" : "";
+    const tag = h.brain === "shared" ? "·shared" : h.brain === "room" ? `·${h.room ?? "room"}·${h.writer ?? "?"}` : "";
     const belief = labels.beliefMetadata === false
       ? (labels.relativeTime !== false && h.created_at ? core.relativeTime(h.created_at, labels.now) : "")
       : core.beliefTag(h, { now: labels.now, relativeTime: labels.relativeTime !== false, lowThreshold: labels.lowThreshold });
@@ -793,6 +803,9 @@ export function registerRemoteMode(
           limit: config.recallTopK ?? 10,
           format: "json",
           scope: settings.sharedRecall ? "all" : "private",
+          // 0.5.0: this is the once-per-turn injection recall — the service adds subscribed room items and applies
+          // brain_focus / injection categories / sensitivity (older services ignore the flag).
+          inject: true,
         });
         if (!r) down = true;
         else if (r.isError) log.debug?.(logFields({ agentId, op: "before_prompt_build.recall", outcome: "tool_error", error: r.text.slice(0, 200) }));

@@ -63,5 +63,7 @@ export const MANIFEST_CONFIG_DEFAULTS: Record<string, unknown> = {
   "openItemSurfacing": true,
   "commitmentNudges": true,
   "replayMaxChars": 1600,
-  "metaToolMaxChars": 2400
+  "metaToolMaxChars": 2400,
+  "quarantine": "log",
+  "focusDefaultTtl": 3
 };

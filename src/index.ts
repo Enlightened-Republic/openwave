@@ -769,6 +769,20 @@ export default definePluginEntry({
         { name },
       );
     }
+    // Xanima 0.5.0 rooms live on the brain service. Local mode registers the same names (the manifest's
+    // contracts.tools is one list for both modes) with a clear answer instead of a missing tool.
+    for (const name of Object.keys(core.ROOM_TOOL_DEFS)) {
+      const def = core.ROOM_TOOL_DEFS[name]!;
+      api.registerTool(
+        () => ({
+          name, description: def.description, parameters: def.inputSchema, outputSchema: BRAIN_TOOL_OUTPUT_SCHEMA,
+          async execute() {
+            return brainToolResult(`${name}: rooms need the Xanima brain service (brainMode "remote", xanima-server >= 0.5.0); local mode has no rooms.`, { isError: true });
+          },
+        }),
+        { name },
+      );
+    }
 
     // ─── Memory adapters (additive — does NOT register exclusive memory capability) ───────
     //
@@ -1283,7 +1297,7 @@ export default definePluginEntry({
       // Voice keeps its tight budget and is excluded.
       if (surface !== "voice") {
         try {
-          const procBlock = core.buildProceduralContext(agentId, hookCtx?.sessionKey ?? sessionId, recalledIds);
+          const procBlock = core.buildProceduralContext(agentId, hookCtx?.sessionKey ?? sessionId, recalledIds, config);
           if (procBlock) parts.push(procBlock);
         } catch (err) {
           log.warn(logFields({ agentId, sessionId, op: "before_prompt_build.procedural", outcome: "error", error: String(err) }));

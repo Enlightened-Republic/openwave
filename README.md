@@ -374,6 +374,24 @@ token on the service). Import, fork and merge are operator steps on the brain ho
 `docs/portability.md`). In remote mode the plugin proxies `brain_export_soul` and
 `brain_review`; `brain_import_soul` is never offered to the agent.
 
+**Rooms, focus and quarantine (0.5.0).** In remote mode the plugin proxies the room
+tools of `xanima-server` 0.5.0: `brain_room` (list / members / conflicts; create
+with a `room-admin` token; invite / revoke for room admins), `brain_publish`,
+`brain_unpublish`, `brain_room_query` and `brain_subscribe`. The per-turn recall
+asks the service with `inject: true`, so up to `roomRecallMax` items from subscribed
+rooms show up tagged `[type·room·writer]`, and the service applies `brain_focus`,
+`injectionCategories` and the sensitivity labels. In local mode the room tools
+answer that rooms need the brain service. `brain_focus {suppress: ["project:x" |
+"room:team" | "type:decision" | "topic"], ttl: 2 | "task"}` works in both modes
+and only ever shapes recall; the identity, goals and rules header is untouched.
+Sensitive memories are injected only when the turn names their topic, and
+`confirm_before_acting` ones keep their marker. Settings: `quarantine` (`log` by
+default: identity / goal / rule writes from tool output, other agents, imports or
+injection-looking text are recorded and still applied; `enforce` holds them in
+`brain_review`), `injectionCategories`, `focusDefaultTtl`. In remote mode the
+service's own settings apply. See sharpwave `docs/rooms.md` and
+`docs/security-model.md`.
+
 ---
 
 ## Brain databases

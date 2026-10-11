@@ -117,7 +117,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
     expect(bad.codeMode.error).toContain("query");
   });
 
-  test("all 32 proxied tools return content text + details.text (none project to {})", async () => {
+  test("all 38 proxied tools return content text + details.text (none project to {})", async () => {
     const [a, b, c] = ids as [string, string, string];
     const calls: Array<[string, Record<string, unknown>, RegExp]> = [
       ["brain_query", { query: "Hailey" }, /Hailey has a corgi named Biscuit/],
@@ -129,7 +129,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       ["brain_review", { node_id: a, quality: 3 }, /./],
       ["brain_edges", { node_id: a }, /./],
       ["brain_supersede", { old_node_id: b, new_content: "Hailey switched to cortados." }, /./],
-      ["brain_status", {}, /Brain status \(schema v23\)/],
+      ["brain_status", {}, /Brain status \(schema v24\)/],
       ["brain_export_soul", {}, /xanima-soul\/1, compact\)/],
       ["brain_review", { action: "list" }, /No pending review items/],
       ["brain_set_goal", { title: "Plan Hailey's birthday dinner", priority: "high" }, /Goal set: \S+ P2 \[active\]/],
@@ -153,7 +153,15 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       ["brain_retract", { node_id: c, reason: "test retraction" }, /Retracted/],
       ["brain_forget", { node_id: c, force: true }, /./],
       ["brain_reset", { confirm: AGENT }, /disabled/],
+      // 0.5.0 rooms + focus (this token has no room-admin scope and no rooms: shape + clean errors)
+      ["brain_room", { action: "list" }, /No named rooms/],
+      ["brain_publish", { room: "team", node_ids: [a] }, /room team not found/],
+      ["brain_unpublish", { room: "team", node_id: a }, /room team not found/],
+      ["brain_room_query", { room: "team", query: "Hailey" }, /room team not found/],
+      ["brain_subscribe", { room: "team" }, /room team not found/],
+      ["brain_focus", { suppress: ["topic:tea"], ttl: 1 }, /Focus set: suppress topic:tea/],
     ];
+    const EXPECTED_ERRORS = new Set(["brain_reset", "brain_publish", "brain_unpublish", "brain_room_query", "brain_subscribe"]);
     expect([...new Set(calls.map(([n]) => n))].sort()).toEqual([...REMOTE_TOOL_NAMES].sort());
     let goalId = "", decId = "";
     for (const [name, rawParams, expected] of calls) {
@@ -163,7 +171,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       if (name === "brain_record_decision") decId = /decision ([0-9a-f-]{36})/.exec(codeMode.text)?.[1] ?? "";
       expectShape(r, codeMode);
       expect(codeMode.text, name).toMatch(expected);
-      if (name !== "brain_reset") expect(codeMode.error, `${name}: ${codeMode.text}`).toBeUndefined();
+      if (!EXPECTED_ERRORS.has(name)) expect(codeMode.error, `${name}: ${codeMode.text}`).toBeUndefined();
     }
   });
 

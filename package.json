@@ -1,6 +1,6 @@
 {
   "name": "xanima-openclaw",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Xanima for OpenClaw (formerly openwave): autonomic long-term memory and agent continuity. Injects identity, goals and query-relevant recall (with confidence and relative-time labels) into every turn, and runs the sleep system. Local brains or a shared Xanima brain service.",
   "license": "MIT",
   "type": "module",
@@ -65,7 +65,7 @@
     "openclaw": "^2026.9.8",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0",
-    "xanima-core": "file:vendor/xanima-core-0.4.0.tgz"
+    "xanima-core": "file:vendor/xanima-core-0.5.0.tgz"
   },
   "bin": {
     "xanima-openclaw-upgrade": "dist/upgrade.js"
