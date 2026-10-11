@@ -815,9 +815,11 @@ export function registerRemoteMode(
             goalsBlock = String(parsed.text ?? "");
             // Xanima 0.4.0 soulHeader: the brain's identity (and optionally its top active goals) as a short header —
             // parity with local mode's never-compacted header, so a soul imported into a fresh brain is visible.
-            // Skipped when MEMORY.md / USER.md owns identity (externalMemoryActive). Empty identity → nothing.
-            const sh = String(config.soulHeader ?? "identity");
-            if (sh !== "off" && !helpers.contextOptsFor(agentId).externalMemoryActive) {
+            // Unset (default "identity"): skipped when MEMORY.md / USER.md owns identity (externalMemoryActive).
+            // Set explicitly by the operator: honoured even then. Empty identity → nothing.
+            const explicit = (config as { soulHeader?: unknown }).soulHeader;
+            const sh = String(explicit ?? "identity");
+            if (sh !== "off" && (explicit !== undefined || !helpers.contextOptsFor(agentId).externalMemoryActive)) {
               const lines: string[] = [];
               if (parsed.identity) lines.push(`[BRAIN: identity] ${String(parsed.identity).replace(/\s+/g, " ").slice(0, 400)}`);
               if (sh === "identity+goals" && Array.isArray(parsed.activeGoals) && parsed.activeGoals.length) lines.push(`[BRAIN: active goals] ${parsed.activeGoals.map((t) => String(t).slice(0, 80)).join(" · ")}`);
