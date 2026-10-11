@@ -14,7 +14,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 import plugin, { __remoteRuntimeForTests } from "../../src/index.js";
-import { EPISODE_APPEND_TOOL, RECALL_BLOCK_HEADER, REMOTE_TOOL_NAMES } from "../../src/remote/register.js";
+import { EPISODE_APPEND_TOOL, RECALL_BLOCK_HEADER, REMOTE_TOOL_NAMES, TURN_CONTEXT_TOOL } from "../../src/remote/register.js";
 import { BRAIN_TOOL_OUTPUT_SCHEMA } from "../../src/tool-result.js";
 import { makeMockApi } from "../mock-api.js";
 import { assertPlainJson, directText, projectToolResultValue } from "../openclaw-projection.js";
@@ -32,7 +32,7 @@ const HAILEY = [
 ];
 
 /** Service tools that are deliberately NOT exposed to the model. */
-const INTERNAL_SERVICE_TOOLS = new Set([EPISODE_APPEND_TOOL, "brain_seed"]);
+const INTERNAL_SERVICE_TOOLS = new Set([EPISODE_APPEND_TOOL, "brain_seed", TURN_CONTEXT_TOOL]);
 
 describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sharpwave-server)", () => {
   let svc: RunningServer;
@@ -117,7 +117,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
     expect(bad.codeMode.error).toContain("query");
   });
 
-  test("all 11 proxied tools return content text + details.text (none project to {})", async () => {
+  test("all 31 proxied tools return content text + details.text (none project to {})", async () => {
     const [a, b, c] = ids as [string, string, string];
     const calls: Array<[string, Record<string, unknown>, RegExp]> = [
       ["brain_query", { query: "Hailey" }, /Hailey has a corgi named Biscuit/],
@@ -129,12 +129,36 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       ["brain_review", { node_id: a, quality: 3 }, /./],
       ["brain_edges", { node_id: a }, /./],
       ["brain_supersede", { old_node_id: b, new_content: "Hailey switched to cortados." }, /./],
+      ["brain_status", {}, /Brain status \(schema v22\)/],
+      ["brain_set_goal", { title: "Plan Hailey's birthday dinner", priority: "high" }, /Goal set: \S+ P2 \[active\]/],
+      ["brain_list_goals", {}, /birthday dinner/],
+      ["brain_update_goal", { goal_id: "__GOAL__", action: "progress", note: "booked" }, /Goal progress/],
+      ["brain_record_decision", { context: "Restaurant for the dinner", chosen: "the taqueria", goal_id: "__GOAL__" }, /^Recorded decision /],
+      ["brain_update_decision_outcome", { decision_id: "__DEC__", outcome: "great night", outcome_status: "matched" }, /Outcome recorded \(matched\)/],
+      ["brain_query_decisions", { query: "restaurant" }, /chose: the taqueria/],
+      ["brain_reflect", { goal_id: "__GOAL__" }, /Reflection on goal "Plan Hailey's birthday dinner"[\s\S]*What worked:[\s\S]*taqueria/],
+      ["brain_replay", { goal_id: "__GOAL__" }, /Replay for goal[\s\S]*MATCHED/],
+      ["brain_hypothesis", { action: "create", statement: "Hailey prefers tacos over sushi", evidence: "she picked the taqueria" }, /^Recorded hypothesis /],
+      ["brain_question", { action: "ask", question: "Does Hailey want a cake this year?" }, /^Recorded question /],
+      ["brain_list_open", {}, /cake this year/],
+      ["brain_commit", { action: "create", title: "book the table for the dinner", due: "tomorrow" }, /Commitment recorded/],
+      ["brain_commitments", {}, /book the table/],
+      ["brain_plan", { action: "create", title: "Birthday dinner plan", steps: ["book", "invite"], goal_id: "__GOAL__" }, /Plan created/],
+      ["brain_changes", { goal_id: "__GOAL__", days: 1 }, /Changes about goal/],
+      ["brain_conflicts", { topic: "Hailey tacos" }, /./],
+      ["brain_briefing", { goal_id: "__GOAL__" }, /^Briefing — /],
+      ["brain_forget_impact", { query: "birthday dinner" }, /dry run — nothing changed/],
+      ["brain_retract", { node_id: c, reason: "test retraction" }, /Retracted/],
       ["brain_forget", { node_id: c, force: true }, /./],
       ["brain_reset", { confirm: AGENT }, /disabled/],
     ];
     expect(calls.map(([n]) => n).sort()).toEqual([...REMOTE_TOOL_NAMES].sort());
-    for (const [name, params, expected] of calls) {
+    let goalId = "", decId = "";
+    for (const [name, rawParams, expected] of calls) {
+      const params = JSON.parse(JSON.stringify(rawParams).replace("__GOAL__", goalId).replace("__DEC__", decId)) as Record<string, unknown>;
       const { r, codeMode } = await run(name, params);
+      if (name === "brain_set_goal") goalId = /Goal set: (\S+)/.exec(codeMode.text)?.[1] ?? "";
+      if (name === "brain_record_decision") decId = /decision ([0-9a-f-]{36})/.exec(codeMode.text)?.[1] ?? "";
       expectShape(r, codeMode);
       expect(codeMode.text, name).toMatch(expected);
       if (name !== "brain_reset") expect(codeMode.error, `${name}: ${codeMode.text}`).toBeUndefined();
@@ -178,6 +202,10 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
     const block = (res as { prependContext?: string } | undefined)?.prependContext ?? "";
     expect(block.startsWith(RECALL_BLOCK_HEADER)).toBe(true);
     expect(block).toContain("Hailey birthday: Hailey's birthday is March 3rd.");
-    expect(block).toContain("Hailey coffee: Hailey drinks oat-milk flat whites every morning.");
+    // brain_supersede (in the all-tools test above) replaced the coffee fact:
+    // only the current version is injected (the old one is history, reachable
+    // with as_of), and each line says when it was learned.
+    expect(block).toContain("Hailey coffee: Hailey switched to cortados. (just now)");
+    expect(block).not.toContain("oat-milk");
   });
 });

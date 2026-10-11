@@ -1,3 +1,61 @@
+# Xanima for OpenClaw (`xanima-openclaw`, formerly openwave)
+
+> **0.3.0 (pre-release, not published): reflection, replay, open items, commitments + plans, meta-tools.**
+> Tools `brain_reflect`, `brain_replay`, `brain_hypothesis`, `brain_question`,
+> `brain_list_open`, `brain_commit`, `brain_commitments`, `brain_plan`,
+> `brain_changes`, `brain_conflicts`, `brain_briefing`, `brain_forget_impact`
+> — local and remote (proxied; private brain). The agent's own "I think …
+> because …", "open question: …" and "I'm assuming …" become drafts. The
+> `[BRAIN: goals]` block may also carry one overdue-commitment nudge (acked with
+> the alignment note after the first real reply) and one relevant open
+> question. Settings: `reflection` (`off` | `sleep`), `reflectionLlm`,
+> `reflectionWindowDays`, `openItemCapture`, `openItemDraftTtlDays`,
+> `openItemSurfacing`, `commitmentNudges`, `replayMaxChars`,
+> `metaToolMaxChars` (remote mode: the service's config.json `brain` block).
+> Needs xanima-server 0.3.0 for the new tools.
+>
+> **0.2.0 (pre-release, not published): decision ledger + goals / drift.**
+> Tools `brain_record_decision`, `brain_update_decision_outcome`,
+> `brain_query_decisions`, `brain_set_goal`, `brain_update_goal` (versions and
+> history kept), `brain_list_goals` — local and remote (proxied; on the
+> service they always use your private brain). The agent's own "I'll go with X
+> over Y because …" becomes a low-confidence decision draft. Each turn may get
+> one small `[BRAIN: goals]` block: an alignment note after the drift pass
+> found a stalled or conflicting goal (acked after the first real reply; memory-tool-only turns do not use it up), and goal lines whose
+> keyword / time trigger fired. Matching decisions get a light recall boost.
+> Settings: `decisionLedger`, `decisionAutoExtract`, `decisionLessonPromotion`,
+> `decisionBoost`, `intentDriftCheck` (`sleep` | `daily` | `off`), `driftDays`,
+> `goalTriggers`, `alignmentNoteMaxTokens`, `decisionDraftTtlDays`, `lessonMergeSimilarity`. In remote mode the engine flags live
+> in the service's config.json `brain` block; the plugin skips the goals call
+> when `intentDriftCheck` is `off` and `goalTriggers` is false. Needs
+> xanima-server 0.2.0 for the new tools (older services: the goals block is
+> skipped silently).
+>
+> **0.1.0 (pre-release, not published):** openwave is now **Xanima**. Package
+> `xanima-openclaw`, plugin id `xanima` (manifest `legacyPluginIds: ["openwave"]`),
+> engine `xanima-core`. The `brain_*` tool names are unchanged and permanent.
+>
+> **New in 0.1.0 (belief foundation):** every memory carries a confidence
+> (low/medium/high/certain + a score), a source (`user`, `self_observation`,
+> `inference`, `tool`, `agent`, `seed`, `legacy`), a status and a sensitivity.
+> Recall lines say when a memory was learned ("3 days ago") and mark low
+> confidence with `(?)` and disputed beliefs as `disputed`. New tools:
+> `brain_retract` (with a reason) and `brain_status` (a short self-check);
+> `brain_supersede` takes a reason and lists related memories to re-check;
+> `brain_query` takes `as_of` ("what did I believe about X on date T").
+> Config flags: `beliefMetadata`, `relativeTimeLabels`, `selfStatus`,
+> `lowConfidenceThreshold`, `sleepBeliefReview` (all default on / 0.4).
+>
+> **Upgrading from openwave 0.2.x** (one-release compatibility window, removed in 0.2.0):
+> - An empty `plugins.entries.xanima` falls back to the old `plugins.entries.openwave.config`
+>   with a deprecation warning. Run `xanima-openclaw-upgrade --config <openclaw.json>` (dry run)
+>   then `--write` to copy the block to `plugins.entries.xanima` and disable (not delete)
+>   `plugins.entries.openwave`; a timestamped backup is written first.
+> - `$OPENWAVE_BRAIN_TOKEN` still works (warning); use `$XANIMA_BRAIN_TOKEN`.
+> - Local brains live in `~/.xanima/<agent>/brain.db`; `~/.sharpwave` is used until
+>   `xanima-server migrate` copies it (the old folder is never moved or deleted).
+> - The host cron id stays `openwave:consolidation` in 0.1.0 (renaming it is deferred).
+
 # openwave
 
 **Autonomic long-term memory for [OpenClaw](https://openclaw.ai) agents.**
@@ -13,7 +71,7 @@ It also runs the sleep system in-process on timers — slow-wave/REM consolidati
 awake replay, and LLM fact extraction — so the graph keeps improving between
 sessions without anything calling it.
 
-The engine is [`sharpwave-core`](https://www.npmjs.com/package/sharpwave-core),
+The engine is [`xanima-core`](https://www.npmjs.com/package/xanima-core),
 the same memory engine behind the [`sharpwave`](https://www.npmjs.com/package/sharpwave)
 MCP server. **Use `sharpwave` (the MCP server) for Claude Code / Cursor / Claude
 Desktop. Use openwave for OpenClaw** — it does everything the MCP server does,
@@ -105,7 +163,7 @@ gateways don't expose the hook and session-workflow surface openwave needs.
 
 ## Configuration
 
-openwave's config is `sharpwave-core`'s `BrainConfig` plus two host-only fields
+openwave's config is `xanima-core`'s `BrainConfig` plus two host-only fields
 (`enabled`, `agents`). Everything under `plugins.entries.openwave.config` is
 merged over the defaults and passed straight into the engine.
 
@@ -121,7 +179,7 @@ merged over the defaults and passed straight into the engine.
 | `openRouterApiKey` | `string` | `$OPENROUTER_API_KEY` / `$SHARPWAVE_OPENROUTER_API_KEY` / `""` | OpenRouter key for engine LLM calls. Empty → extraction and generative-REM degrade to heuristic mode (non-fatal). Prefer the env var over putting the key in `openclaw.json`. |
 
 Engine (`BrainConfig`) fields you can also override, passed through to
-`sharpwave-core` (defaults from `core.DEFAULT_CONFIG`):
+`xanima-core` (defaults from `core.DEFAULT_CONFIG`):
 
 | field | type | default | meaning |
 |---|---|---|---|
@@ -280,7 +338,7 @@ openwave registers all **16** `brain_*` tools:
 `brain_reset`, `brain_update_self_model`, `brain_reflect`, `brain_generate_skill`,
 `brain_workspace`, `brain_docs`.
 
-Definitions and executors come from `sharpwave-core`'s unified tool module, so
+Definitions and executors come from `xanima-core`'s unified tool module, so
 openwave and the `sharpwave` MCP server can never expose a drifted schema. (The
 MCP server publishes a narrower 11-tool subset.)
 
@@ -332,13 +390,13 @@ Same brain db, same schema, no migration in either direction.
 ## Development
 
 ```bash
-npm ci                 # lockfile install (sharpwave-core 0.4.5 from npm; no local core build needed)
-npm run build          # esbuild → dist/index.js (single file, sharpwave-core inlined)
+npm ci                 # lockfile install (xanima-core 0.4.5 from npm; no local core build needed)
+npm run build          # esbuild → dist/index.js (single file, xanima-core inlined)
 npm test               # vitest — mock-api hook harness
 ```
 
-The engine (`sharpwave-core`) is a normal npm dependency, bundled into
-`dist/index.js` at build time. Bump the `sharpwave-core` version in `package.json`
+The engine (`xanima-core`) is a normal npm dependency, bundled into
+`dist/index.js` at build time. Bump the `xanima-core` version in `package.json`
 to pick up engine changes.
 
 ## License

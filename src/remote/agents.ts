@@ -231,7 +231,7 @@ export class Provisioner {
           writeTokenFileSecure(path, out.token);
         } catch (we) {
           const msg = `minted ${out.tokenId} but could not write ${path} securely: ${redact(String((we as Error).message ?? we))}. ` +
-            `Fix the tokens folder, then sharpwave-server token revoke ${out.tokenId} so openwave can re-provision.`;
+            `Fix the tokens folder, then xanima-server token revoke ${out.tokenId} so xanima can re-provision.`;
           this.log.error(this.fmt({ agentId, op: "provision", outcome: "token_write_failed", error: msg }));
           return this.fail(agentId, msg, false);
         }
@@ -242,7 +242,7 @@ export class Provisioner {
       if (out.status === "already-provisioned") {
         // The service has a live token for this agent but the file is gone: we can't recover the plaintext.
         const msg = `the brain service already has a token for "${agentId}" (${(out.tokenIds ?? []).join(",")}) but ${path} is missing. ` +
-          `Restore the file, or rotate: sharpwave-server token revoke <id> then let openwave re-provision.`;
+          `Restore the file, or rotate: xanima-server token revoke <id> then let xanima re-provision.`;
         this.log.error(this.fmt({ agentId, op: "provision", outcome: "token_file_missing", error: msg }));
         return this.fail(agentId, msg, false, { status: "already-provisioned", tokenIds: out.tokenIds ?? [] });
       }

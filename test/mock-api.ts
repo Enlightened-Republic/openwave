@@ -81,7 +81,7 @@ export function makeMockApi(pluginConfig: Record<string, unknown>, opts: MockApi
   const callAction = (id: string, payload: Record<string, unknown>) => {
     const action = rec.sessionActions.get(id);
     if (!action) throw new Error(`session action not registered: ${id}`);
-    return action.handler({ pluginId: "openwave", actionId: id, payload });
+    return action.handler({ pluginId: "xanima", actionId: id, payload });
   };
   return { api, rec, fire, callAction, configFile };
 }

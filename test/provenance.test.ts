@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import * as core from "sharpwave-core";
+import * as core from "xanima-core";
 import plugin from "../src/index.js";
 import { makeMockApi } from "./mock-api.js";
 import {

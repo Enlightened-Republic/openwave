@@ -68,7 +68,7 @@ test("setPersonaOverride merges a patch, persists it, and getPersonaConfig refle
   });
 
   // Persisted into the config file draft under the documented path.
-  expect(configFile.plugins.entries.openwave.config.personaOverrides.mila).toEqual({
+  expect(configFile.plugins.entries.xanima.config.personaOverrides.mila).toEqual({
     inhibitionStrength: 0.3,
     spreadingActivationHops: 2,
   });
@@ -122,7 +122,7 @@ test("clearPersonaOverride without a field removes the whole override", async ()
   const cleared = await callAction("clearPersonaOverride", { agentId: "mila" });
 
   expect(cleared).toMatchObject({ ok: true, result: { override: {} } });
-  expect(configFile.plugins.entries.openwave.config.personaOverrides.mila).toBeUndefined();
+  expect(configFile.plugins.entries.xanima.config.personaOverrides.mila).toBeUndefined();
 });
 
 test("setPersonaOverride fails closed (no throw) when the host has no config-mutation surface", async () => {

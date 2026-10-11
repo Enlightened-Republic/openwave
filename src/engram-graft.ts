@@ -12,7 +12,7 @@ function logFields(fields: Record<string, string | number | boolean | undefined>
   for (const [k, v] of Object.entries(fields)) {
     if (v !== undefined) filtered[k] = v;
   }
-  return `[openwave] ${JSON.stringify(filtered)}`;
+  return `[xanima] ${JSON.stringify(filtered)}`;
 }
 
 export type GraftConfig = {
@@ -40,7 +40,7 @@ export type CronService = {
 };
 
 /**
- * Graft A: detect the host curated memory tier -> sharpwave-core context opts.
+ * Graft A: detect the host curated memory tier -> xanima-core context opts.
  * `hostConfig` is the live OpenClaw config (api.runtime.config.current()); it is
  * what runtime.agent.resolveAgentWorkspaceDir expects, not openwave's own config.
  * `cfg.curatedTierDedupe === false` disables the dedupe entirely.
