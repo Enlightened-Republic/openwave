@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 
-import * as core from "sharpwave-core";
-import { DEFAULT_CONFIG } from "sharpwave-core";
+import * as core from "xanima-core";
+import { DEFAULT_CONFIG } from "xanima-core";
 import { armSchedulers, disarmSchedulers, runConsolidationPass } from "../src/scheduler.js";
 
 const noop = { info() {}, warn() {}, error() {} };

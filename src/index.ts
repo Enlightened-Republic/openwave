@@ -2,24 +2,24 @@
 //
 // openwave — the OpenClaw plugin shell.
 //
-// Ported from `clawbrain-v4/src/index.ts` (1197 lines) onto `sharpwave-core`.
+// Ported from `clawbrain-v4/src/index.ts` (1197 lines) onto `xanima-core`.
 // Everything that made ClawBrain v4's wake-up layer work is preserved: the
 // 3-layer bootstrap injection, the per-surface (voice/chat) trims, the
 // 2026-05-16 lifecycle split, the in-process sleep-system timers, the memory
 // adapters. The only structural change is that every engine call now goes
-// through the `sharpwave-core` barrel instead of sibling-relative imports.
+// through the `xanima-core` barrel instead of sibling-relative imports.
 //
 // Task 8 extracts the in-process timers into `scheduler.ts`; they are inline
 // and working here on purpose.
 
 import { randomUUID } from "node:crypto";
 
-import * as core from "sharpwave-core";
+import * as core from "xanima-core";
 import {
   BRAIN_TOOL_DEFS,
   OPENWAVE_TOOL_NAMES,
   dispatchBrainTool,
-} from "sharpwave-core";
+} from "xanima-core";
 import { decideBootstrapDelivery, bootstrapIdempotencyKey } from "./bootstrap-delivery.js";
 import { capImportance, classifyOrigin, readOwnerAllowFrom } from "./provenance.js";
 import {
@@ -35,6 +35,7 @@ import {
   CONSOLIDATION_CRON_ID,
 } from "./engram-graft.js";
 import { OPENWAVE_SETTINGS_CONTRACT, type PersonaOverrideFields } from "./settings-contract.js";
+import { PLUGIN_ID, resolvePluginConfig } from "./legacy-config.js";
 import {
   DEFAULT_BRAIN_URL,
   DEFAULT_REMOTE_TIMEOUT_MS,
@@ -48,10 +49,11 @@ import { registerRemoteMode, type RemoteRuntime } from "./remote/register.js";
 import { AgentRoster, isDynamicAgents, type AutoAgentsConfig, type AgentsSpec } from "./remote/agents.js";
 import { BRAIN_TOOL_OUTPUT_SCHEMA, brainToolResult } from "./tool-result.js";
 import type { BrainConnectionInfo } from "./settings-contract.js";
+import { AlignmentAckTracker } from "./alignment-ack.js";
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 //
-// `sharpwave-core`'s BrainConfig has no `enabled` / `agents` — those are host
+// `xanima-core`'s BrainConfig has no `enabled` / `agents` — those are host
 // concerns (the MCP server pins one agent per process; openwave serves many).
 // They stay in openwave's own config type rather than being pushed into core.
 
@@ -295,7 +297,7 @@ function clearSessionAgent(sessionId: string | undefined): void {
 // Minted once per gateway process and prefixed so gateway_start can sweep
 // buckets left behind by earlier processes.
 //
-// sharpwave-core has no ephemeral-session concept (its `clearStaleWorkingMemory`
+// xanima-core has no ephemeral-session concept (its `clearStaleWorkingMemory`
 // drops EVERY working_memory row, which would wipe live sessions that legitimately
 // straddle a gateway restart), so the prefixed sweep stays here.
 const EPHEMERAL_SESSION_PREFIX = "ephemeral:";
@@ -357,7 +359,7 @@ function logFields(fields: StructuredFields): string {
   for (const [k, v] of Object.entries(fields)) {
     if (v !== undefined) filtered[k] = v;
   }
-  return `[openwave] ${JSON.stringify(filtered)}`;
+  return `[xanima] ${JSON.stringify(filtered)}`;
 }
 
 // ── Agent ID resolution ────────────────────────────────────────────────────────
@@ -482,10 +484,10 @@ function registerPersonaSettingsFeature(
           mutate(draft) {
             draft.plugins ??= {};
             draft.plugins.entries ??= {};
-            draft.plugins.entries.openwave ??= {};
-            draft.plugins.entries.openwave.config ??= {};
-            draft.plugins.entries.openwave.config.personaOverrides ??= {};
-            draft.plugins.entries.openwave.config.personaOverrides[agentId] = nextOverride;
+            draft.plugins.entries[PLUGIN_ID] ??= {};
+            draft.plugins.entries[PLUGIN_ID].config ??= {};
+            draft.plugins.entries[PLUGIN_ID].config.personaOverrides ??= {};
+            draft.plugins.entries[PLUGIN_ID].config.personaOverrides[agentId] = nextOverride;
           },
         });
       } catch (err) {
@@ -523,7 +525,7 @@ function registerPersonaSettingsFeature(
         await mutateConfigFile({
           afterWrite: { mode: "auto" },
           mutate(draft) {
-            const overrides = draft.plugins?.entries?.openwave?.config?.personaOverrides;
+            const overrides = draft.plugins?.entries?.[PLUGIN_ID]?.config?.personaOverrides;
             if (!overrides) return;
             if (clearWhole) delete overrides[agentId];
             else overrides[agentId] = current;
@@ -619,13 +621,24 @@ async function removeLegacyCronJobs(
 // ── Plugin entry ───────────────────────────────────────────────────────────────
 
 export default definePluginEntry({
-  id: "openwave",
-  name: "openwave",
+  id: PLUGIN_ID,
+  name: "xanima",
   description:
-    "Autonomic wake-up memory for OpenClaw agents. Injects identity, goals and query-relevant recall into every turn, and runs the sleep system (consolidation, awake replay, extraction) in-process. Powered by sharpwave-core.",
+    "Xanima (formerly openwave): autonomic memory and agent continuity for OpenClaw agents. Injects identity, goals and query-relevant recall (with confidence and relative-time labels) into every turn, and runs the sleep system in-process or on the Xanima brain service. Powered by xanima-core.",
   register(api: OpenClawPluginApi): void {
     // openclaw.json structure: { enabled, hooks, config: { agents, contextBudget, ... } }
-    const rawPluginConfig = (api.pluginConfig as Record<string, unknown>) ?? {};
+    // 0.1.x: an empty xanima entry falls back to the old plugins.entries.openwave block.
+    const resolvedRaw = resolvePluginConfig(
+      (api.pluginConfig as Record<string, unknown>) ?? {},
+      (() => {
+        let live: unknown;
+        try { live = api.runtime?.config?.current?.(); } catch { live = undefined; }
+        return live ?? (api as unknown as { config?: unknown }).config;
+      })(),
+      (m) => (api.logger?.warn ?? (() => {}))(m),
+    );
+    (api.logger?.info ?? (() => {}))(`[xanima] {"op":"config.source","outcome":"${resolvedRaw.source}"}`);
+    const rawPluginConfig = resolvedRaw.raw;
     const brainSettings = (rawPluginConfig.config as Partial<OpenwaveConfig>) ?? (rawPluginConfig as Partial<OpenwaveConfig>);
     const config: OpenwaveConfig = {
       ...DEFAULT_OPENWAVE_CONFIG,
@@ -654,8 +667,8 @@ export default definePluginEntry({
     }
 
     // When the host already curates MEMORY.md/USER.md (OpenClaw memory-core) for an
-    // agent, that tier owns durable identity/goals: tell sharpwave-core to skip them so
-    // the agent isn't handed two copies (Engram Graft A widens this in sharpwave-core).
+    // agent, that tier owns durable identity/goals: tell xanima-core to skip them so
+    // the agent isn't handed two copies (Engram Graft A widens this in xanima-core).
     // Presence check only, evaluated per call so a MEMORY.md curated mid-run takes
     // effect without a restart; fails closed (false = inject as usual) on older hosts.
     // `curatedTierDedupe: false` turns it off. See engram-graft.ts / memory-detection.ts.
@@ -693,8 +706,8 @@ export default definePluginEntry({
         }
       }
       if (!candidate && tc?.sessionKey?.startsWith("agent:")) candidate = tc.sessionKey.split(":")[1];
-      if (!candidate) return { error: "openwave: cannot determine which agent is calling this tool, so it refused to touch any brain." };
-      if (!isServed(candidate)) return { error: `openwave is not serving agent "${candidate}" (plugins.entries.openwave.config.agents), so it refused to touch its brain.` };
+      if (!candidate) return { error: "xanima: cannot determine which agent is calling this tool, so it refused to touch any brain." };
+      if (!isServed(candidate)) return { error: `xanima is not serving agent "${candidate}" (plugins.entries.xanima.config.agents), so it refused to touch its brain.` };
       return { agentId: candidate };
     };
 
@@ -730,6 +743,7 @@ export default definePluginEntry({
     // hourly / session_end harvest nor in-process SWS can mint nodes from them.
     const noise = resolveSystemNoiseSettings(config);
     const noisePairs = new NoisePairTracker();
+    const alignmentAcks = new AlignmentAckTracker();
     if (noise.invalidPatterns.length) log.warn(logFields({ op: "system_noise.patterns", outcome: "invalid", count: noise.invalidPatterns.length }));
     const skipTurn = (agentId: string, op: string, t: Parameters<typeof classifySystemTurn>[0]): boolean => {
       const v = classifySystemTurn(t, noise);
@@ -750,6 +764,20 @@ export default definePluginEntry({
             if ("error" in who) return brainToolResult(who.error, { isError: true });
             const r = await dispatchBrainTool(name, who.agentId, params ?? {}, config, "openwave");
             return brainToolResult(r.text, { isError: r.isError });
+          },
+        }),
+        { name },
+      );
+    }
+    // Xanima 0.5.0 rooms live on the brain service. Local mode registers the same names (the manifest's
+    // contracts.tools is one list for both modes) with a clear answer instead of a missing tool.
+    for (const name of Object.keys(core.ROOM_TOOL_DEFS)) {
+      const def = core.ROOM_TOOL_DEFS[name]!;
+      api.registerTool(
+        () => ({
+          name, description: def.description, parameters: def.inputSchema, outputSchema: BRAIN_TOOL_OUTPUT_SCHEMA,
+          async execute() {
+            return brainToolResult(`${name}: rooms need the Xanima brain service (brainMode "remote", xanima-server >= 0.5.0); local mode has no rooms.`, { isError: true });
           },
         }),
         { name },
@@ -787,7 +815,7 @@ export default definePluginEntry({
       api.registerMemoryPromptSupplement?.(() => {
         // Lightweight additive prompt — the bulk of memory comes through
         // the appendSystemContext / prependContext channels we own.
-        return ["[openwave] graph memory active — call brain_query/brain_history for deep recall."];
+        return ["[xanima] graph memory active — call brain_query/brain_history for deep recall."];
       });
     } catch (err) {
       log.warn(logFields({ op: "registerMemoryPromptSupplement", outcome: "error", error: String(err) }));
@@ -1240,6 +1268,17 @@ export default definePluginEntry({
         // non-fatal — recall continues without pre-priming
       }
 
+      // Xanima 0.2.0: alignment note (once, after a drift pass) + goal triggers, budget-capped.
+      if (surface !== "voice") {
+        try {
+          const g = core.buildGoalTurnContext(agentId, lastUserMsg ?? "", config, Date.now(), log);
+          if (g.text) parts.push(g.text);
+          alignmentAcks.offer(agentId, g.noteIds ?? g.noteId); // delivered only after a real reply (llm_output)
+        } catch (err) {
+          log.debug?.(logFields({ agentId, sessionId, op: "before_prompt_build.goals", outcome: "error", error: String(err) }));
+        }
+      }
+
       const recalledIds = new Set<string>();
       try {
         const recallBlock = await core.buildRecallContext(agentId, lastUserMsg, hookCtx?.sessionKey ?? sessionId, config, surface, recalledIds);
@@ -1258,7 +1297,7 @@ export default definePluginEntry({
       // Voice keeps its tight budget and is excluded.
       if (surface !== "voice") {
         try {
-          const procBlock = core.buildProceduralContext(agentId, hookCtx?.sessionKey ?? sessionId, recalledIds);
+          const procBlock = core.buildProceduralContext(agentId, hookCtx?.sessionKey ?? sessionId, recalledIds, config);
           if (procBlock) parts.push(procBlock);
         } catch (err) {
           log.warn(logFields({ agentId, sessionId, op: "before_prompt_build.procedural", outcome: "error", error: String(err) }));
@@ -1301,6 +1340,15 @@ export default definePluginEntry({
 
       const result: { appendSystemContext?: string; prependContext?: string } = {};
       if (selfModelHeader) result.appendSystemContext = selfModelHeader;
+      // Xanima: one-line memory self-status, only when something needs attention.
+      if (surface !== "voice") {
+        try {
+          const footer = core.buildStatusFooter(agentId, config);
+          if (footer) result.appendSystemContext = result.appendSystemContext ? `${result.appendSystemContext}\n${footer}` : footer;
+        } catch (err) {
+          log.debug?.(logFields({ agentId, op: "before_prompt_build.status", outcome: "error", error: String(err) }));
+        }
+      }
       if (parts.length > 0) result.prependContext = parts.join("\n\n");
 
       log.debug?.(logFields({
@@ -1402,6 +1450,15 @@ export default definePluginEntry({
       }
     });
 
+    // before_tool_call (observe only): which tools ran in the turn that carried the alignment note
+    api.on("before_tool_call", (event: { toolName?: string; params?: Record<string, unknown> }, hookCtx: { agentId?: string; sessionKey?: string }) => {
+      try {
+        const agentId = resolveAgentId(undefined, hookCtx, config.agents);
+        alignmentAcks.toolCall(agentId, event?.toolName, event?.params);
+      } catch { /* observe only */ }
+      return undefined;
+    });
+
     // llm_output
     api.on("llm_output", async (event: { assistantTexts?: string[]; content?: string; prompt?: string }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string; trigger?: string; inputProvenance?: InputProvenanceLike }) => {
       const agentId = resolveAgentId(undefined, hookCtx, config.agents);
@@ -1422,6 +1479,13 @@ export default definePluginEntry({
         return;
       }
       if (skipTurn(agentId, "llm_output", { role: "assistant", content, sessionKey, trigger: hookCtx?.trigger, inputProvenance: hookCtx?.inputProvenance, prompt: event?.prompt })) return;
+      // Xanima 0.2.0: a real reply came out of the prompt that carried the alignment note → delivered.
+      {
+        for (const ackId of alignmentAcks.repliedAll(agentId, content)) {
+          try { core.ackAlignmentNote(agentId, ackId); log.debug?.(logFields({ agentId, op: "llm_output.alignment_ack", outcome: "ok", noteId: ackId })); }
+          catch (err) { log.debug?.(logFields({ agentId, op: "llm_output.alignment_ack", outcome: "error", error: String(err) })); }
+        }
+      }
       // Cron sessions are operational overhead — clamp importance below the
       // extraction threshold so responses like "Awakened via cron — Morning
       // Routine" never become extracted brain nodes. Episode still written for
@@ -1450,6 +1514,23 @@ export default definePluginEntry({
         return;
       }
       log.info(logFields({ agentId, sessionId, op: "llm_output", outcome: "ok", importance, isCronSession }));
+
+      // Xanima 0.2.0: heuristic decision drafts from the agent's own words.
+      if (!isCronSession) {
+        try {
+          const drafted = core.autoExtractDecisions(agentId, content, config, { evidence: [episodeId] });
+          if (drafted.length) log.info(logFields({ agentId, sessionId, op: "llm_output.decision_draft", outcome: "ok", count: drafted.length }));
+        } catch (err) {
+          log.debug?.(logFields({ agentId, sessionId, op: "llm_output.decision_draft", outcome: "error", error: String(err) }));
+        }
+        // Xanima 0.3.0: "I think … because …", "open question: …", "assuming …" → open-item drafts.
+        try {
+          const captured = core.autoExtractOpenItems(agentId, content, config, { evidence: [episodeId] });
+          if (captured.length) log.info(logFields({ agentId, sessionId, op: "llm_output.open_item_draft", outcome: "ok", count: captured.length }));
+        } catch (err) {
+          log.debug?.(logFields({ agentId, sessionId, op: "llm_output.open_item_draft", outcome: "error", error: String(err) }));
+        }
+      }
 
       if (config.llmExtractionEnabled && importance >= config.llmExtractionMinImportance) {
         core.queueEpisodeForExtraction(agentId, {
@@ -1516,7 +1597,7 @@ export default definePluginEntry({
       outcome: "ok",
       agents: config.agents.length,
       tools: OPENWAVE_TOOL_NAMES.length,
-      engine: "sharpwave-core",
+      engine: "xanima-core",
       // LLM-route diagnostics (booleans/model-id only, never key material):
       // added 2026-07-13 when REM fell back to keyword mode despite the nvidia
       // ingestionModel being configured — makes key/config delivery visible.

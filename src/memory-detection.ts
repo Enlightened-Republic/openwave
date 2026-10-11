@@ -2,7 +2,7 @@
 // any other plugin curating MEMORY.md/USER.md) is already active for an
 // agent's workspace, so openwave can avoid injecting content that duplicates
 // that curated tier's purpose (see buildBootstrapContext/buildSelfModelHeader
-// `externalMemoryActive` option in sharpwave-core's context-assembly.ts).
+// `externalMemoryActive` option in xanima-core's context-assembly.ts).
 //
 // openwave never reads these files' content or writes to them — memory-core
 // owns MEMORY.md as a single-writer file with its own optimistic-concurrency

@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 
-import { getDb } from "sharpwave-core";
+import { getDb } from "xanima-core";
 import plugin from "../src/index.js";
 import { makeMockApi } from "./mock-api.js";
 
