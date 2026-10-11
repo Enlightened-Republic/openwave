@@ -70,14 +70,25 @@ export const REMOTE_TOOL_NAMES = [
   "brain_reset",
   "brain_retract",
   "brain_status",
+  // Xanima 0.2.0 decision ledger + goals (private brain only on the service)
+  "brain_record_decision",
+  "brain_update_decision_outcome",
+  "brain_query_decisions",
+  "brain_set_goal",
+  "brain_update_goal",
+  "brain_list_goals",
 ] as const;
+
+/** Service plumbing (xanima-server >= 0.2.0): alignment note + goal triggers for this turn. Not exposed to the model. */
+export const TURN_CONTEXT_TOOL = "brain_turn_context";
+const CONTINUITY_TOOLS = new Set<string>(["brain_record_decision", "brain_update_decision_outcome", "brain_query_decisions", "brain_set_goal", "brain_update_goal", "brain_list_goals"]);
 
 // Copied verbatim from xanima-core buildRecallContext so the injected block
 // is byte-identical in shape to local mode.
 export const RECALL_BLOCK_HEADER =
   "[BRAIN: on your mind — ·gist items are rough unattributed fragments; do not assert them as facts about Hailey without checking]";
 export const REMOTE_BANNER =
-  "[Xanima remote] Memories from the Xanima brain service (private + shared) are pre-loaded below with their age; (?) = low confidence. Tools: brain_query (as_of = what you believed then), brain_write, brain_retract / brain_supersede (give a reason), brain_status.";
+  "[Xanima remote] Memories from the Xanima brain service (private + shared) are pre-loaded below with their age; (?) = low confidence. Tools: brain_query (as_of = what you believed then), brain_write, brain_retract / brain_supersede (give a reason), brain_status, brain_record_decision / brain_set_goal.";
 export const REMOTE_DOWN_NOTICE =
   "[Xanima remote] Brain service unavailable this turn — no memories were loaded; brain_* tools may fail until it recovers.";
 /** How long a remote brain_status result is reused for the injection footer. */
@@ -147,6 +158,8 @@ function remoteToolSchema(name: string): { description: string; parameters: Reco
     // The service also accepts format (text|json) here; keep the published schema in sync.
     props["visibility"] = { ...vis, description: "Which brain holds the node. Default: your private brain, then shared." };
     props["format"] = { type: "string", enum: ["text", "json"], description: "Output format (default text)." };
+  } else if (CONTINUITY_TOOLS.has(name)) {
+    // decisions and goals live in the caller's private brain; no visibility arg
   } else {
     props["visibility"] = vis;
   }
@@ -727,6 +740,7 @@ export function registerRemoteMode(
     recordHook(agentId, hookCtx);
   }, { priority: 0, timeoutMs: 200 });
 
+  const turnContextUnsupported = new Set<string>();
   api.on("before_prompt_build", async (event: { prompt?: string; messages?: Array<{ role?: string; content?: unknown }>; kind?: string }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string }) => {
     try {
       const t0 = Date.now();
@@ -771,6 +785,18 @@ export function registerRemoteMode(
       } else if (conn.status === "unreachable" || conn.status === "unauthorized") {
         down = true;
       }
+
+      // Xanima 0.2.0: alignment note (delivered once) + goal triggers from the service.
+      let goalsBlock = "";
+      if (!down && surface !== "voice" && !(config.intentDriftCheck === "off" && config.goalTriggers === false) && !turnContextUnsupported.has(agentId)) {
+        const g = await call(agentId, "before_prompt_build.goals", TURN_CONTEXT_TOOL, { query: (query ?? "").slice(0, 2000) });
+        if (g && !g.isError) {
+          try { goalsBlock = String((JSON.parse(g.text) as { text?: string }).text ?? ""); } catch { /* ignore */ }
+        } else if (g?.isError && /unknown tool/i.test(g.text)) {
+          turnContextUnsupported.add(agentId); // older service: stop asking
+        }
+      }
+      if (goalsBlock) block = block ? `${goalsBlock}\n\n${block}` : goalsBlock;
 
       const result: { appendSystemContext?: string; prependContext?: string } = {};
       if (surface !== "voice") result.appendSystemContext = down ? REMOTE_DOWN_NOTICE : REMOTE_BANNER;

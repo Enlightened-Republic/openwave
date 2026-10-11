@@ -1252,6 +1252,16 @@ export default definePluginEntry({
         // non-fatal — recall continues without pre-priming
       }
 
+      // Xanima 0.2.0: alignment note (once, after a drift pass) + goal triggers, budget-capped.
+      if (surface !== "voice") {
+        try {
+          const g = core.buildGoalTurnContext(agentId, lastUserMsg ?? "", config, Date.now(), log);
+          if (g.text) parts.push(g.text);
+        } catch (err) {
+          log.debug?.(logFields({ agentId, sessionId, op: "before_prompt_build.goals", outcome: "error", error: String(err) }));
+        }
+      }
+
       const recalledIds = new Set<string>();
       try {
         const recallBlock = await core.buildRecallContext(agentId, lastUserMsg, hookCtx?.sessionKey ?? sessionId, config, surface, recalledIds);
@@ -1471,6 +1481,16 @@ export default definePluginEntry({
         return;
       }
       log.info(logFields({ agentId, sessionId, op: "llm_output", outcome: "ok", importance, isCronSession }));
+
+      // Xanima 0.2.0: heuristic decision drafts from the agent's own words.
+      if (!isCronSession) {
+        try {
+          const drafted = core.autoExtractDecisions(agentId, content, config, { evidence: [episodeId] });
+          if (drafted.length) log.info(logFields({ agentId, sessionId, op: "llm_output.decision_draft", outcome: "ok", count: drafted.length }));
+        } catch (err) {
+          log.debug?.(logFields({ agentId, sessionId, op: "llm_output.decision_draft", outcome: "error", error: String(err) }));
+        }
+      }
 
       if (config.llmExtractionEnabled && importance >= config.llmExtractionMinImportance) {
         core.queueEpisodeForExtraction(agentId, {

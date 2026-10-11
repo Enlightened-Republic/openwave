@@ -5,7 +5,7 @@
 //     old plugins.entries.openwave.config exists, the old block is used as-is
 //     and a one-time deprecation warning says how to upgrade.
 //   • $XANIMA_BRAIN_TOKEN replaces $OPENWAVE_BRAIN_TOKEN (old name still read,
-//     with a warning). The old names are dropped in 0.2.0.
+//     with a warning). The old names are dropped in 0.3.0 (kept through 0.2.x: neither release has shipped to a live install yet).
 //   • upgradeOpenwaveConfig(): a pure transform of an openclaw.json object used
 //     by the `xanima-openclaw-upgrade` CLI. It COPIES the openwave block to
 //     xanima, disables (does not delete) the openwave entry so the two never
@@ -56,7 +56,7 @@ export function resolvePluginConfig(raw: Obj | undefined, ocConfig: unknown, war
   }
   const legacy = legacyEntry(ocConfig);
   if (legacy && isObj(legacy["config"]) && hasSettings(legacy)) {
-    warnOnce("legacy-config", warn, `reading settings from plugins.entries.openwave.config (the old plugin name). Run xanima-openclaw-upgrade (or copy the block to plugins.entries.xanima.config); the openwave entry stops being read in 0.2.0.`);
+    warnOnce("legacy-config", warn, `reading settings from plugins.entries.openwave.config (the old plugin name). Run xanima-openclaw-upgrade (or copy the block to plugins.entries.xanima.config); the openwave entry stops being read in 0.3.0.`);
     return { raw: { ...mine, config: legacy["config"] }, source: "openwave-legacy" };
   }
   return { raw: mine, source: "default" };
@@ -82,7 +82,7 @@ export function brainTokenFromEnv(env: NodeJS.ProcessEnv, warn: (m: string) => v
   if (v) return v;
   const old = env["OPENWAVE_BRAIN_TOKEN"]?.trim();
   if (old) {
-    warnOnce("env-token", warn, "$OPENWAVE_BRAIN_TOKEN is deprecated; set $XANIMA_BRAIN_TOKEN instead (the old name stops working in 0.2.0).");
+    warnOnce("env-token", warn, "$OPENWAVE_BRAIN_TOKEN is deprecated; set $XANIMA_BRAIN_TOKEN instead (the old name stops working in 0.3.0).");
     return old;
   }
   return undefined;
