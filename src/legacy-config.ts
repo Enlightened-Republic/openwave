@@ -87,7 +87,7 @@ export interface UpgradeResult {
  * openwave 0.2.x → xanima 0.1.0 config upgrade (pure; the caller writes the
  * file after backing it up). Idempotent.
  */
-export function upgradeOpenwaveConfig(input: Obj): UpgradeResult {
+export function upgradeOpenwaveConfig(input: Obj, opts: { rewriteDataPaths?: (oldPath: string) => string | null } = {}): UpgradeResult {
   const cfg = structuredClone(input) as Obj;
   const notes: string[] = [];
   const plugins = (isObj(cfg["plugins"]) ? cfg["plugins"] : (cfg["plugins"] = {})) as Obj;
@@ -113,6 +113,18 @@ export function upgradeOpenwaveConfig(input: Obj): UpgradeResult {
     old["enabled"] = false;
     notes.push("disabled plugins.entries.openwave (kept for rollback; re-enable it and disable xanima to roll back)");
     changed = true;
+  }
+  // Optional: point token/data paths in the xanima block at ~/.xanima once
+  // `xanima-server migrate` has copied them (the caller decides per path).
+  const xe = entries[PLUGIN_ID];
+  if (opts.rewriteDataPaths && isObj(xe) && isObj(xe["config"])) {
+    const conf = xe["config"] as Obj;
+    for (const [k, v] of Object.entries(conf)) {
+      if (typeof v !== "string" || !/[\\/]\.sharpwave([\\/]|$)/.test(v)) continue;
+      const next = opts.rewriteDataPaths(v);
+      if (next && next !== v) { conf[k] = next; notes.push(`plugins.entries.xanima.config.${k}: ${v} → ${next}`); changed = true; }
+      else notes.push(`plugins.entries.xanima.config.${k} still points at ${v} (target under .xanima not found; run xanima-server migrate first)`);
+    }
   }
   for (const listKey of ["allow", "deny"] as const) {
     const list = plugins[listKey];

@@ -98,6 +98,16 @@ describe("upgradeOpenwaveConfig (openwave 0.2.0 → xanima 0.1.0)", () => {
     expect(upgradeOpenwaveConfig({}).changed).toBe(false);
   });
 
+  test("optional data-path rewrite only where the caller confirms the new path", () => {
+    const r = upgradeOpenwaveConfig(OPENWAVE_020, { rewriteDataPaths: (p) => (p.includes("_provisioner") ? null : p.replace(".sharpwave", ".xanima")) });
+    const c = (r.config["plugins"] as { entries: Record<string, { config: Record<string, string> }> }).entries["xanima"]!.config;
+    expect(c["brainTokenFile"]).toBe("~/.xanima/tokens/{agentId}.token");
+    expect(c["provisionTokenFile"]).toBe("~/.sharpwave/tokens/_provisioner.token");
+    expect(r.notes.join("\n")).toMatch(/provisionTokenFile still points at/);
+    // the openwave block (rollback) is never rewritten
+    expect((r.config["plugins"] as { entries: Record<string, { config: Record<string, string> }> }).entries["openwave"]!.config["brainTokenFile"]).toBe("~/.sharpwave/tokens/{agentId}.token");
+  });
+
   test("CLI: dry run changes nothing; --write backs up then writes", () => {
     const cli = fileURLToPath(new URL("../dist/upgrade.js", import.meta.url));
     if (!existsSync(cli)) execFileSync(process.execPath, [fileURLToPath(new URL("../esbuild.mjs", import.meta.url))], { cwd: fileURLToPath(new URL("..", import.meta.url)) });
