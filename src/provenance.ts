@@ -1,6 +1,6 @@
 // Provenance gate for inbound messages (research/emotional-memory-openclaw-integration.md §5.4).
 //
-// sharpwave-core scores importance from the TEXT alone: any message containing
+// xanima-core scores importance from the TEXT alone: any message containing
 // "remember/always/never/important/critical" scores 0.85 and any emotion word 0.75
 // (core `scoreImportance`). At >= llmExtractionMinImportance (0.4) the episode is queued for
 // LLM extraction into brain nodes, and at >= 0.8 it fires a dopamine spike. None of that asks

@@ -1,8 +1,11 @@
 {
-  "id": "openwave",
-  "name": "openwave",
-  "version": "0.2.0",
-  "description": "Autonomic wake-up memory for OpenClaw agents. Injects identity, goals and query-relevant recall into every turn, and runs the sleep system (consolidation, awake replay, extraction) in-process. Powered by sharpwave-core.",
+  "id": "xanima",
+  "name": "xanima",
+  "legacyPluginIds": [
+    "openwave"
+  ],
+  "version": "0.1.0",
+  "description": "Xanima (formerly openwave): autonomic memory and agent continuity for OpenClaw agents. Injects identity, goals and query-relevant recall (with confidence and relative-time labels) into every turn, and runs the sleep system. Powered by xanima-core.",
   "activation": {
     "onStartup": true
   },
@@ -19,6 +22,8 @@
       "brain_forget",
       "brain_edges",
       "brain_reset",
+      "brain_retract",
+      "brain_status",
       "brain_update_self_model",
       "brain_reflect",
       "brain_generate_skill",
@@ -48,7 +53,7 @@
         "default": [
           "main"
         ],
-        "description": "OpenClaw agent ids openwave serves, or \"*\" for every agent in the OpenClaw config (remote mode picks up new agents live, no restart). Local mode routes each to ~/.sharpwave/<id>/brain.db."
+        "description": "OpenClaw agent ids xanima serves, or \"*\" for every agent in the OpenClaw config (remote mode picks up new agents live, no restart). Local mode routes each to ~/.xanima/<id>/brain.db (or ~/.sharpwave/<id> until `xanima-server migrate` has run)."
       },
       "contextBudget": {
         "type": "number",
@@ -283,11 +288,38 @@
         "type": "number",
         "default": 30000,
         "description": "Remote + agents:\"*\"/autoProvision: how often to re-read the agent list in the background (ms). 0 = only on gateway start and per turn."
+      },
+      "beliefMetadata": {
+        "type": "boolean",
+        "default": true,
+        "description": "Xanima belief metadata: confidence, source and status on every memory; low-confidence recall lines get a (?) marker and disputed ones say so."
+      },
+      "relativeTimeLabels": {
+        "type": "boolean",
+        "default": true,
+        "description": "Label recalled memories with when they were learned (\"3 days ago\")."
+      },
+      "selfStatus": {
+        "type": "boolean",
+        "default": true,
+        "description": "Add a one-line [BRAIN: status] footer to the injection when the memory system needs attention (disputed beliefs, items flagged by sleep, sleep overdue)."
+      },
+      "lowConfidenceThreshold": {
+        "type": "number",
+        "default": 0.4,
+        "minimum": 0,
+        "maximum": 1,
+        "description": "Confidence score below which a belief counts as low confidence (marker + review flag)."
+      },
+      "sleepBeliefReview": {
+        "type": "boolean",
+        "default": true,
+        "description": "Sleep flags low-confidence and contradicted beliefs for review (and keeps them out of the prune) instead of letting them silently decay."
       }
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/d616eef61e7bfdae/index.js"
+    "entry": "dist/control-ui/c9325d63ae876dc5/index.js"
   },
   "uiHints": {
     "brainToken": {

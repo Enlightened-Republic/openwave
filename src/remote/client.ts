@@ -99,7 +99,7 @@ export class RemoteBrainClient {
       const transport = new StreamableHTTPClientTransport(new URL(`${this.opts.url}/mcp`), {
         requestInit: { headers: { authorization: `Bearer ${this.opts.token}` } },
       });
-      const client = new Client({ name: "openwave", version: this.opts.clientVersion ?? "0" }, { capabilities: {} });
+      const client = new Client({ name: "xanima-openclaw", version: this.opts.clientVersion ?? "0" }, { capabilities: {} });
       client.onerror = () => { /* surfaced through the awaited call instead */ };
       try {
         await deadline(client.connect(transport, { timeout: this.opts.timeoutMs }), this.opts.timeoutMs, "connect");

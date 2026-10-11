@@ -117,7 +117,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
     expect(bad.codeMode.error).toContain("query");
   });
 
-  test("all 11 proxied tools return content text + details.text (none project to {})", async () => {
+  test("all 13 proxied tools return content text + details.text (none project to {})", async () => {
     const [a, b, c] = ids as [string, string, string];
     const calls: Array<[string, Record<string, unknown>, RegExp]> = [
       ["brain_query", { query: "Hailey" }, /Hailey has a corgi named Biscuit/],
@@ -129,6 +129,8 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       ["brain_review", { node_id: a, quality: 3 }, /./],
       ["brain_edges", { node_id: a }, /./],
       ["brain_supersede", { old_node_id: b, new_content: "Hailey switched to cortados." }, /./],
+      ["brain_status", {}, /Brain status \(schema v19\)/],
+      ["brain_retract", { node_id: c, reason: "test retraction" }, /Retracted/],
       ["brain_forget", { node_id: c, force: true }, /./],
       ["brain_reset", { confirm: AGENT }, /disabled/],
     ];
@@ -178,6 +180,10 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
     const block = (res as { prependContext?: string } | undefined)?.prependContext ?? "";
     expect(block.startsWith(RECALL_BLOCK_HEADER)).toBe(true);
     expect(block).toContain("Hailey birthday: Hailey's birthday is March 3rd.");
-    expect(block).toContain("Hailey coffee: Hailey drinks oat-milk flat whites every morning.");
+    // brain_supersede (in the all-tools test above) replaced the coffee fact:
+    // only the current version is injected (the old one is history, reachable
+    // with as_of), and each line says when it was learned.
+    expect(block).toContain("Hailey coffee: Hailey switched to cortados. (just now)");
+    expect(block).not.toContain("oat-milk");
   });
 });

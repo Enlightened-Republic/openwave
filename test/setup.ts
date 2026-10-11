@@ -1,4 +1,4 @@
-// Isolate every test's DB writes to a throwaway temp dir. sharpwave-core's
+// Isolate every test's DB writes to a throwaway temp dir. xanima-core's
 // db.ts honors SHARPWAVE_DATA_DIR directly. Each test still picks a unique
 // agentId so their dbs never collide.
 import { join } from "node:path";

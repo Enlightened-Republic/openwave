@@ -14,10 +14,10 @@
 // runs from the host cron job `openwave:consolidation` (see engram-graft.ts),
 // whose cron_changed event calls `runConsolidationPass` below.
 //
-// Every engine call goes through the `sharpwave-core` barrel. `harvestExtraction`
+// Every engine call goes through the `xanima-core` barrel. `harvestExtraction`
 // is also called directly by index.ts's `session_end` hook, so it is exported.
 
-import * as core from "sharpwave-core";
+import * as core from "xanima-core";
 
 type Logger = {
   info: (msg: string) => void;
@@ -47,7 +47,7 @@ function logFields(fields: Record<string, string | number | boolean | undefined>
   for (const [k, v] of Object.entries(fields)) {
     if (v !== undefined) filtered[k] = v;
   }
-  return `[openwave] ${JSON.stringify(filtered)}`;
+  return `[xanima] ${JSON.stringify(filtered)}`;
 }
 
 // ─── Extraction harvest ────────────────────────────────────────────────────────

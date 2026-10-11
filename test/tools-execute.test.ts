@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import * as core from "sharpwave-core";
+import * as core from "xanima-core";
 import plugin from "../src/index.js";
 import { makeMockApi } from "./mock-api.js";
 import { assertPlainJson, directText, projectToolResultValue } from "./openclaw-projection.js";
