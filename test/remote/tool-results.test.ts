@@ -117,7 +117,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
     expect(bad.codeMode.error).toContain("query");
   });
 
-  test("all 31 proxied tools return content text + details.text (none project to {})", async () => {
+  test("all 32 proxied tools return content text + details.text (none project to {})", async () => {
     const [a, b, c] = ids as [string, string, string];
     const calls: Array<[string, Record<string, unknown>, RegExp]> = [
       ["brain_query", { query: "Hailey" }, /Hailey has a corgi named Biscuit/],
@@ -129,7 +129,9 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       ["brain_review", { node_id: a, quality: 3 }, /./],
       ["brain_edges", { node_id: a }, /./],
       ["brain_supersede", { old_node_id: b, new_content: "Hailey switched to cortados." }, /./],
-      ["brain_status", {}, /Brain status \(schema v22\)/],
+      ["brain_status", {}, /Brain status \(schema v23\)/],
+      ["brain_export_soul", {}, /xanima-soul\/1, compact\)/],
+      ["brain_review", { action: "list" }, /No pending review items/],
       ["brain_set_goal", { title: "Plan Hailey's birthday dinner", priority: "high" }, /Goal set: \S+ P2 \[active\]/],
       ["brain_list_goals", {}, /birthday dinner/],
       ["brain_update_goal", { goal_id: "__GOAL__", action: "progress", note: "booked" }, /Goal progress/],
@@ -152,7 +154,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       ["brain_forget", { node_id: c, force: true }, /./],
       ["brain_reset", { confirm: AGENT }, /disabled/],
     ];
-    expect(calls.map(([n]) => n).sort()).toEqual([...REMOTE_TOOL_NAMES].sort());
+    expect([...new Set(calls.map(([n]) => n))].sort()).toEqual([...REMOTE_TOOL_NAMES].sort());
     let goalId = "", decId = "";
     for (const [name, rawParams, expected] of calls) {
       const params = JSON.parse(JSON.stringify(rawParams).replace("__GOAL__", goalId).replace("__DEC__", decId)) as Record<string, unknown>;

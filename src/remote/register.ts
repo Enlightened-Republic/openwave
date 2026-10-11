@@ -91,12 +91,15 @@ export const REMOTE_TOOL_NAMES = [
   "brain_conflicts",
   "brain_briefing",
   "brain_forget_impact",
+  // Xanima 0.4.0 Soul Package: export of SELF only (agent-safe). brain_review (above) also carries the review-queue
+  // mode; its accept / reject and brain_import_soul need an admin token on the service — import / merge stay CLI.
+  "brain_export_soul",
 ] as const;
 
 /** Service plumbing (xanima-server >= 0.2.0): alignment note + goal triggers for this turn. Not exposed to the model. */
 export const TURN_CONTEXT_TOOL = "brain_turn_context";
 const CONTINUITY_TOOLS = new Set<string>(["brain_record_decision", "brain_update_decision_outcome", "brain_query_decisions", "brain_set_goal", "brain_update_goal", "brain_list_goals",
-  "brain_reflect", "brain_replay", "brain_hypothesis", "brain_question", "brain_list_open", "brain_commit", "brain_commitments", "brain_plan", "brain_changes", "brain_conflicts", "brain_briefing", "brain_forget_impact"]);
+  "brain_reflect", "brain_replay", "brain_hypothesis", "brain_question", "brain_list_open", "brain_commit", "brain_commitments", "brain_plan", "brain_changes", "brain_conflicts", "brain_briefing", "brain_forget_impact", "brain_export_soul"]);
 
 // Copied verbatim from xanima-core buildRecallContext so the injected block
 // is byte-identical in shape to local mode.
