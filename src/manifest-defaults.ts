@@ -54,5 +54,14 @@ export const MANIFEST_CONFIG_DEFAULTS: Record<string, unknown> = {
   "goalTriggers": true,
   "alignmentNoteMaxTokens": 60,
   "decisionDraftTtlDays": 14,
-  "lessonMergeSimilarity": 0.86
+  "lessonMergeSimilarity": 0.86,
+  "reflection": "off",
+  "reflectionLlm": false,
+  "reflectionWindowDays": 7,
+  "openItemCapture": true,
+  "openItemDraftTtlDays": 14,
+  "openItemSurfacing": true,
+  "commitmentNudges": true,
+  "replayMaxChars": 1600,
+  "metaToolMaxChars": 2400
 };

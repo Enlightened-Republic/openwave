@@ -5,7 +5,7 @@
  * (brain_status, brain_list_goals, …) does not use it up; neither does a
  * skipped cron / heartbeat / noise turn or an empty reply.
  */
-export interface OfferedNote { noteId: number; brainTools: number; otherTools: number; at: number }
+export interface OfferedNote { noteId: number; /** Xanima 0.3.0: every offered note this turn (alignment note + commitment nudge). */ noteIds: number[]; brainTools: number; otherTools: number; at: number }
 
 const toolNameOf = (toolName: unknown, params: unknown): string => {
   const n = typeof toolName === "string" ? toolName : "";
@@ -17,8 +17,9 @@ const toolNameOf = (toolName: unknown, params: unknown): string => {
 export class AlignmentAckTracker {
   private readonly offered = new Map<string, OfferedNote>();
 
-  offer(agentId: string, noteId: number | null | undefined): void {
-    if (typeof noteId === "number") this.offered.set(agentId, { noteId, brainTools: 0, otherTools: 0, at: Date.now() });
+  offer(agentId: string, noteId: number | number[] | null | undefined): void {
+    const ids = (Array.isArray(noteId) ? noteId : [noteId]).filter((x): x is number => typeof x === "number");
+    if (ids.length) this.offered.set(agentId, { noteId: ids[0]!, noteIds: ids, brainTools: 0, otherTools: 0, at: Date.now() });
     else this.offered.delete(agentId);
   }
 
@@ -29,14 +30,19 @@ export class AlignmentAckTracker {
     else p.otherTools++;
   }
 
-  /** The reply is in. Returns the note id to ack, or null (tool-only turn / no note). Clears the offer either way. */
+  /** The reply is in. Returns the first note id to ack, or null (tool-only turn / no note). Clears the offer either way. */
   replied(agentId: string, text: string): number | null {
+    return this.repliedAll(agentId, text)[0] ?? null;
+  }
+
+  /** Like replied, but every offered note id (alignment note + commitment nudge). */
+  repliedAll(agentId: string, text: string): number[] {
     const p = this.offered.get(agentId);
-    if (!p) return null;
+    if (!p) return [];
     this.offered.delete(agentId);
-    if (!text.trim()) return null;
-    if (p.brainTools > 0 && p.otherTools === 0) return null; // memory-tool-only turn
-    return p.noteId;
+    if (!text.trim()) return [];
+    if (p.brainTools > 0 && p.otherTools === 0) return []; // memory-tool-only turn
+    return p.noteIds;
   }
 
   pending(agentId: string): OfferedNote | undefined { return this.offered.get(agentId); }

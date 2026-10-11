@@ -117,7 +117,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
     expect(bad.codeMode.error).toContain("query");
   });
 
-  test("all 19 proxied tools return content text + details.text (none project to {})", async () => {
+  test("all 31 proxied tools return content text + details.text (none project to {})", async () => {
     const [a, b, c] = ids as [string, string, string];
     const calls: Array<[string, Record<string, unknown>, RegExp]> = [
       ["brain_query", { query: "Hailey" }, /Hailey has a corgi named Biscuit/],
@@ -129,13 +129,25 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       ["brain_review", { node_id: a, quality: 3 }, /./],
       ["brain_edges", { node_id: a }, /./],
       ["brain_supersede", { old_node_id: b, new_content: "Hailey switched to cortados." }, /./],
-      ["brain_status", {}, /Brain status \(schema v21\)/],
+      ["brain_status", {}, /Brain status \(schema v22\)/],
       ["brain_set_goal", { title: "Plan Hailey's birthday dinner", priority: "high" }, /Goal set: \S+ P2 \[active\]/],
       ["brain_list_goals", {}, /birthday dinner/],
       ["brain_update_goal", { goal_id: "__GOAL__", action: "progress", note: "booked" }, /Goal progress/],
       ["brain_record_decision", { context: "Restaurant for the dinner", chosen: "the taqueria", goal_id: "__GOAL__" }, /^Recorded decision /],
       ["brain_update_decision_outcome", { decision_id: "__DEC__", outcome: "great night", outcome_status: "matched" }, /Outcome recorded \(matched\)/],
       ["brain_query_decisions", { query: "restaurant" }, /chose: the taqueria/],
+      ["brain_reflect", { goal_id: "__GOAL__" }, /Reflection on goal "Plan Hailey's birthday dinner"[\s\S]*What worked:[\s\S]*taqueria/],
+      ["brain_replay", { goal_id: "__GOAL__" }, /Replay for goal[\s\S]*MATCHED/],
+      ["brain_hypothesis", { action: "create", statement: "Hailey prefers tacos over sushi", evidence: "she picked the taqueria" }, /^Recorded hypothesis /],
+      ["brain_question", { action: "ask", question: "Does Hailey want a cake this year?" }, /^Recorded question /],
+      ["brain_list_open", {}, /cake this year/],
+      ["brain_commit", { action: "create", title: "book the table for the dinner", due: "tomorrow" }, /Commitment recorded/],
+      ["brain_commitments", {}, /book the table/],
+      ["brain_plan", { action: "create", title: "Birthday dinner plan", steps: ["book", "invite"], goal_id: "__GOAL__" }, /Plan created/],
+      ["brain_changes", { goal_id: "__GOAL__", days: 1 }, /Changes about goal/],
+      ["brain_conflicts", { topic: "Hailey tacos" }, /./],
+      ["brain_briefing", { goal_id: "__GOAL__" }, /^Briefing — /],
+      ["brain_forget_impact", { query: "birthday dinner" }, /dry run — nothing changed/],
       ["brain_retract", { node_id: c, reason: "test retraction" }, /Retracted/],
       ["brain_forget", { node_id: c, force: true }, /./],
       ["brain_reset", { confirm: AGENT }, /disabled/],

@@ -4,8 +4,8 @@
   "legacyPluginIds": [
     "openwave"
   ],
-  "version": "0.2.0",
-  "description": "Xanima (formerly openwave): autonomic memory and agent continuity for OpenClaw agents. Injects identity, goals and query-relevant recall (with confidence and relative-time labels) into every turn, and runs the sleep system. Powered by xanima-core. 0.2.0 adds a decision ledger, versioned goals with drift detection, alignment notes and goal triggers.",
+  "version": "0.3.0",
+  "description": "Xanima (formerly openwave): autonomic memory and agent continuity for OpenClaw agents. Injects identity, goals and query-relevant recall (with confidence and relative-time labels) into every turn, and runs the sleep system. Powered by xanima-core. 0.2.0 adds a decision ledger, versioned goals with drift detection, alignment notes and goal triggers; 0.3.0 adds reflection, experience replay, hypotheses / questions / assumptions, commitments and plans (park / resume briefings) and meta-tools.",
   "activation": {
     "onStartup": true
   },
@@ -34,7 +34,18 @@
       "brain_query_decisions",
       "brain_set_goal",
       "brain_update_goal",
-      "brain_list_goals"
+      "brain_list_goals",
+      "brain_replay",
+      "brain_hypothesis",
+      "brain_question",
+      "brain_list_open",
+      "brain_commit",
+      "brain_commitments",
+      "brain_plan",
+      "brain_changes",
+      "brain_conflicts",
+      "brain_briefing",
+      "brain_forget_impact"
     ]
   },
   "configSchema": {
@@ -386,6 +397,63 @@
         "minimum": 0.5,
         "maximum": 0.99,
         "description": "Embedding cosine at/above which a new lesson merges into an existing skill instead of creating one (lexical fallback without embeddings)."
+      },
+      "reflection": {
+        "type": "string",
+        "enum": [
+          "off",
+          "sleep"
+        ],
+        "default": "off",
+        "description": "Sleep reflection phase: \"sleep\" writes a templated what-worked / what-didn't / try-next reflection from recent outcomes (no LLM). brain_reflect works either way."
+      },
+      "reflectionLlm": {
+        "type": "boolean",
+        "default": false,
+        "description": "Opt-in: let the LLM phrase sleep reflections (falls back to the template on any failure)."
+      },
+      "reflectionWindowDays": {
+        "type": "number",
+        "default": 7,
+        "minimum": 1,
+        "maximum": 90,
+        "description": "Days a reflection looks back when no since/until is given."
+      },
+      "openItemCapture": {
+        "type": "boolean",
+        "default": true,
+        "description": "Capture \"I think … because …\", \"open question: …\" and \"assuming …\" from the agent's own replies as unconfirmed drafts."
+      },
+      "openItemDraftTtlDays": {
+        "type": "number",
+        "default": 14,
+        "minimum": 0,
+        "maximum": 365,
+        "description": "Captured open-item drafts nobody touched or linked expire (soft) after this many days (0 = never)."
+      },
+      "openItemSurfacing": {
+        "type": "boolean",
+        "default": true,
+        "description": "Surface one relevant open question / hypothesis / assumption per turn when the prompt is about it (6 h cooldown each)."
+      },
+      "commitmentNudges": {
+        "type": "boolean",
+        "default": true,
+        "description": "One-line nudge for an overdue or blocked commitment; consumed only by a real reply (like the alignment note)."
+      },
+      "replayMaxChars": {
+        "type": "number",
+        "default": 1600,
+        "minimum": 400,
+        "maximum": 8000,
+        "description": "Character cap for brain_replay."
+      },
+      "metaToolMaxChars": {
+        "type": "number",
+        "default": 2400,
+        "minimum": 400,
+        "maximum": 12000,
+        "description": "Character cap for brain_changes / brain_conflicts / brain_briefing / brain_forget_impact / brain_list_open."
       }
     }
   },

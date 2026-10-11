@@ -20,3 +20,16 @@ test("alignment ack: only a real reply acks; memory-tool-only turns, empty repli
   t.offer("c", 3); t.offer("c", null);
   expect(t.pending("c")).toBeUndefined();
 });
+
+test("0.3.0: several offered notes (alignment note + commitment nudge) are acked together", () => {
+  const t = new AlignmentAckTracker();
+  t.offer("a", [4, 5]);
+  t.toolCall("a", "brain_status", {});
+  expect(t.repliedAll("a", "TOOL brain_status RESULT")).toEqual([]);
+  t.offer("a", [4, 5]);
+  expect(t.repliedAll("a", "A real answer")).toEqual([4, 5]);
+  t.offer("a", []);
+  expect(t.pending("a")).toBeUndefined();
+  t.offer("b", [9]);
+  expect(t.replied("b", "ok")).toBe(9);
+});

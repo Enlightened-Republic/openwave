@@ -1259,7 +1259,7 @@ export default definePluginEntry({
         try {
           const g = core.buildGoalTurnContext(agentId, lastUserMsg ?? "", config, Date.now(), log);
           if (g.text) parts.push(g.text);
-          alignmentAcks.offer(agentId, g.noteId); // delivered only after a real reply (llm_output)
+          alignmentAcks.offer(agentId, g.noteIds ?? g.noteId); // delivered only after a real reply (llm_output)
         } catch (err) {
           log.debug?.(logFields({ agentId, sessionId, op: "before_prompt_build.goals", outcome: "error", error: String(err) }));
         }
@@ -1467,8 +1467,7 @@ export default definePluginEntry({
       if (skipTurn(agentId, "llm_output", { role: "assistant", content, sessionKey, trigger: hookCtx?.trigger, inputProvenance: hookCtx?.inputProvenance, prompt: event?.prompt })) return;
       // Xanima 0.2.0: a real reply came out of the prompt that carried the alignment note → delivered.
       {
-        const ackId = alignmentAcks.replied(agentId, content);
-        if (ackId !== null) {
+        for (const ackId of alignmentAcks.repliedAll(agentId, content)) {
           try { core.ackAlignmentNote(agentId, ackId); log.debug?.(logFields({ agentId, op: "llm_output.alignment_ack", outcome: "ok", noteId: ackId })); }
           catch (err) { log.debug?.(logFields({ agentId, op: "llm_output.alignment_ack", outcome: "error", error: String(err) })); }
         }
@@ -1509,6 +1508,13 @@ export default definePluginEntry({
           if (drafted.length) log.info(logFields({ agentId, sessionId, op: "llm_output.decision_draft", outcome: "ok", count: drafted.length }));
         } catch (err) {
           log.debug?.(logFields({ agentId, sessionId, op: "llm_output.decision_draft", outcome: "error", error: String(err) }));
+        }
+        // Xanima 0.3.0: "I think … because …", "open question: …", "assuming …" → open-item drafts.
+        try {
+          const captured = core.autoExtractOpenItems(agentId, content, config, { evidence: [episodeId] });
+          if (captured.length) log.info(logFields({ agentId, sessionId, op: "llm_output.open_item_draft", outcome: "ok", count: captured.length }));
+        } catch (err) {
+          log.debug?.(logFields({ agentId, sessionId, op: "llm_output.open_item_draft", outcome: "error", error: String(err) }));
         }
       }
 
