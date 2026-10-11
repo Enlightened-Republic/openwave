@@ -76,7 +76,7 @@ describe.skipIf(!HAVE_SERVER)("remote brain mode (real sharpwave-server)", () =>
     return h;
   };
 
-  test("registers only the 11 service tools and no local cron; removes a stale openwave:consolidation job", async () => {
+  test("registers only the 13 service tools and no local cron; removes a stale openwave:consolidation job", async () => {
     const h = remote(["ow-alpha"]);
     expect(h.runtime).not.toBeNull();
     expect(h.rec.tools.map((t: (c: unknown) => { name: string }) => t({ agentId: "ow-alpha" }).name).sort()).toEqual([...REMOTE_TOOL_NAMES].sort());
@@ -273,7 +273,7 @@ describe("remote brain mode: degraded service (no server needed)", () => {
   test("local mode (default) is unchanged: local tools, local cron, no remote runtime", async () => {
     const h = setup({ agents: ["ow-local"] });
     expect(__remoteRuntimeForTests()).toBeNull();
-    expect(h.rec.tools.length).toBe(16);
+    expect(h.rec.tools.length).toBe(24);
     await h.fire("gateway_start", {}, { getCron: () => ({ list: async () => [], add: async (j: unknown) => { h.cron.added.push(j); }, update: async () => {}, remove: async () => ({}) }) });
     expect(h.cron.added.length).toBe(1);
     expect(existsSync(join(dataDir(), "ow-local", "brain.db"))).toBe(true);

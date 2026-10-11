@@ -3,14 +3,14 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import * as core from "sharpwave-core";
+import * as core from "xanima-core";
 import plugin from "../src/index.js";
 import { makeMockApi } from "./mock-api.js";
 
 // When the host already curates MEMORY.md/USER.md (OpenClaw memory-core), openwave
 // must stop injecting the goals block -- that tier owns curated goals. Everything
 // else graph-specific (BRAIN_HEADER, the SharpWave identity header, recall) must
-// stay. sharpwave-core >= 0.4.2 takes the `externalMemoryActive` option; openwave
+// stay. xanima-core >= 0.4.2 takes the `externalMemoryActive` option; openwave
 // decides it per agent from the agent's workspace.
 //
 // We assert on the goals block's own rendering, not on the goal's text: the node's
@@ -68,7 +68,7 @@ test("host MEMORY.md has content -> bootstrap omits the goals block, BRAIN_HEADE
   await fire("session_start", { ...ctx }, ctx);
   expect(rec.injections[0].text).not.toContain("[BRAIN: active goals]");
   expect(rec.injections[0].text).not.toContain(BOOTSTRAP_GOALS);
-  expect(rec.injections[0].text).toContain("[SharpWave active]");
+  expect(rec.injections[0].text).toContain("[Xanima active]");
 });
 
 test("host USER.md alone is enough -> every-turn header omits goals but keeps the SharpWave header", async () => {
@@ -77,7 +77,7 @@ test("host USER.md alone is enough -> every-turn header omits goals but keeps th
 
   const out = await fire("before_prompt_build", { prompt: "hi", messages: [] }, ctx);
   expect(sysOf(out)).not.toContain("[goals]");
-  expect(sysOf(out)).toContain("[SharpWave]");
+  expect(sysOf(out)).toContain("[Xanima]");
 });
 
 test("heartbeat header also omits goals when the host memory tier is active (and has them otherwise)", async () => {
@@ -86,7 +86,7 @@ test("heartbeat header also omits goals when the host memory tier is active (and
 
   const active = register(workspace({ "MEMORY.md": "curated\n" }));
   const withHost = textOf(await active.fire("heartbeat_prompt_contribution", {}, hbCtx));
-  expect(withHost).toContain("[SharpWave]");
+  expect(withHost).toContain("[Xanima]");
   expect(withHost).not.toContain("[goals]");
 
   const plain = register(workspace({}));
