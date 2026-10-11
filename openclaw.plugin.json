@@ -1,8 +1,11 @@
 {
-  "id": "openwave",
-  "name": "openwave",
-  "version": "0.2.0",
-  "description": "Autonomic wake-up memory for OpenClaw agents. Injects identity, goals and query-relevant recall into every turn, and runs the sleep system (consolidation, awake replay, extraction) in-process. Powered by sharpwave-core.",
+  "id": "xanima",
+  "name": "xanima",
+  "legacyPluginIds": [
+    "openwave"
+  ],
+  "version": "0.4.0",
+  "description": "Xanima (formerly openwave): autonomic memory and agent continuity for OpenClaw agents. Injects identity, goals and query-relevant recall (with confidence and relative-time labels) into every turn, and runs the sleep system. Powered by xanima-core. 0.2.0 adds a decision ledger, versioned goals with drift detection, alignment notes and goal triggers; 0.3.0 adds reflection, experience replay, hypotheses / questions / assumptions, commitments and plans (park / resume briefings) and meta-tools; 0.4.0 adds the portable Soul Package (brain_export_soul for the agent's own brain, and the brain_review queue for imported identity / goal changes).",
   "activation": {
     "onStartup": true
   },
@@ -19,11 +22,31 @@
       "brain_forget",
       "brain_edges",
       "brain_reset",
+      "brain_retract",
+      "brain_status",
       "brain_update_self_model",
       "brain_reflect",
       "brain_generate_skill",
       "brain_workspace",
-      "brain_docs"
+      "brain_docs",
+      "brain_record_decision",
+      "brain_update_decision_outcome",
+      "brain_query_decisions",
+      "brain_set_goal",
+      "brain_update_goal",
+      "brain_list_goals",
+      "brain_replay",
+      "brain_hypothesis",
+      "brain_question",
+      "brain_list_open",
+      "brain_commit",
+      "brain_commitments",
+      "brain_plan",
+      "brain_changes",
+      "brain_conflicts",
+      "brain_briefing",
+      "brain_forget_impact",
+      "brain_export_soul"
     ]
   },
   "configSchema": {
@@ -48,7 +71,7 @@
         "default": [
           "main"
         ],
-        "description": "OpenClaw agent ids openwave serves, or \"*\" for every agent in the OpenClaw config (remote mode picks up new agents live, no restart). Local mode routes each to ~/.sharpwave/<id>/brain.db."
+        "description": "OpenClaw agent ids xanima serves, or \"*\" for every agent in the OpenClaw config (remote mode picks up new agents live, no restart). Local mode routes each to ~/.xanima/<id>/brain.db (or ~/.sharpwave/<id> until `xanima-server migrate` has run)."
       },
       "contextBudget": {
         "type": "number",
@@ -283,11 +306,169 @@
         "type": "number",
         "default": 30000,
         "description": "Remote + agents:\"*\"/autoProvision: how often to re-read the agent list in the background (ms). 0 = only on gateway start and per turn."
+      },
+      "beliefMetadata": {
+        "type": "boolean",
+        "default": true,
+        "description": "Xanima belief metadata: confidence, source and status on every memory; low-confidence recall lines get a (?) marker and disputed ones say so."
+      },
+      "relativeTimeLabels": {
+        "type": "boolean",
+        "default": true,
+        "description": "Label recalled memories with when they were learned (\"3 days ago\")."
+      },
+      "selfStatus": {
+        "type": "boolean",
+        "default": true,
+        "description": "Add a one-line [BRAIN: status] footer to the injection when the memory system needs attention (disputed beliefs, items flagged by sleep, sleep overdue)."
+      },
+      "lowConfidenceThreshold": {
+        "type": "number",
+        "default": 0.4,
+        "minimum": 0,
+        "maximum": 1,
+        "description": "Confidence score below which a belief counts as low confidence (marker + review flag)."
+      },
+      "sleepBeliefReview": {
+        "type": "boolean",
+        "default": true,
+        "description": "Sleep flags low-confidence and contradicted beliefs for review (and keeps them out of the prune) instead of letting them silently decay."
+      },
+      "decisionLedger": {
+        "type": "boolean",
+        "default": true,
+        "description": "Decision ledger: brain_record_decision / brain_update_decision_outcome / brain_query_decisions, a light recall boost for matching decisions, and the sleep decision pass."
+      },
+      "decisionAutoExtract": {
+        "type": "boolean",
+        "default": true,
+        "description": "Draft low-confidence decisions from the agent's own first-person choices (\"I'll go with X over Y because ...\"). Heuristic, no LLM."
+      },
+      "decisionLessonPromotion": {
+        "type": "boolean",
+        "default": false,
+        "description": "Sleep promotes recurring / high-value lessons from resolved decisions to skill nodes."
+      },
+      "decisionBoost": {
+        "type": "number",
+        "default": 1.2,
+        "minimum": 1,
+        "maximum": 2,
+        "description": "Activation multiplier for decisions that match the current context."
+      },
+      "intentDriftCheck": {
+        "type": "string",
+        "enum": [
+          "sleep",
+          "daily",
+          "off"
+        ],
+        "default": "sleep",
+        "description": "Compare recent activity with active goals and flag drift: during sleep, at most once a day at turn time, or off."
+      },
+      "driftDays": {
+        "type": "number",
+        "default": 7,
+        "minimum": 1,
+        "maximum": 90,
+        "description": "Days without progress before a goal counts as drifting."
+      },
+      "goalTriggers": {
+        "type": "boolean",
+        "default": true,
+        "description": "Keyword / time triggers that surface a goal when it becomes relevant."
+      },
+      "soulHeader": {
+        "type": "string",
+        "enum": [
+          "off",
+          "identity",
+          "identity+goals"
+        ],
+        "description": "No schema default on purpose: unset behaves as \"identity\" with the workspace dedupe. Remote mode (0.4.0): show the brain's identity line (and optionally its top 3 active goals) each turn, like local mode's header. Nothing is shown while identity is empty; when left unset it is also skipped while MEMORY.md / USER.md own identity (set it explicitly to show it anyway)."
+      },
+      "alignmentNoteMaxTokens": {
+        "type": "number",
+        "default": 60,
+        "minimum": 20,
+        "maximum": 400,
+        "description": "Token cap for the injected goals block (alignment note + trigger lines)."
+      },
+      "decisionDraftTtlDays": {
+        "type": "number",
+        "default": 14,
+        "minimum": 0,
+        "maximum": 365,
+        "description": "Auto-extracted decision drafts that stay unconfirmed, outcome-less and unlinked this many days are soft-retired by sleep (0 = never)."
+      },
+      "lessonMergeSimilarity": {
+        "type": "number",
+        "default": 0.86,
+        "minimum": 0.5,
+        "maximum": 0.99,
+        "description": "Embedding cosine at/above which a new lesson merges into an existing skill instead of creating one (lexical fallback without embeddings)."
+      },
+      "reflection": {
+        "type": "string",
+        "enum": [
+          "off",
+          "sleep"
+        ],
+        "default": "off",
+        "description": "Sleep reflection phase: \"sleep\" writes a templated what-worked / what-didn't / try-next reflection from recent outcomes (no LLM). brain_reflect works either way."
+      },
+      "reflectionLlm": {
+        "type": "boolean",
+        "default": false,
+        "description": "Opt-in: let the LLM phrase sleep reflections (falls back to the template on any failure)."
+      },
+      "reflectionWindowDays": {
+        "type": "number",
+        "default": 7,
+        "minimum": 1,
+        "maximum": 90,
+        "description": "Days a reflection looks back when no since/until is given."
+      },
+      "openItemCapture": {
+        "type": "boolean",
+        "default": true,
+        "description": "Capture \"I think … because …\", \"open question: …\" and \"assuming …\" from the agent's own replies as unconfirmed drafts."
+      },
+      "openItemDraftTtlDays": {
+        "type": "number",
+        "default": 14,
+        "minimum": 0,
+        "maximum": 365,
+        "description": "Captured open-item drafts nobody touched or linked expire (soft) after this many days (0 = never)."
+      },
+      "openItemSurfacing": {
+        "type": "boolean",
+        "default": true,
+        "description": "Surface one relevant open question / hypothesis / assumption per turn when the prompt is about it (6 h cooldown each)."
+      },
+      "commitmentNudges": {
+        "type": "boolean",
+        "default": true,
+        "description": "One-line nudge for an overdue or blocked commitment; consumed only by a real reply (like the alignment note)."
+      },
+      "replayMaxChars": {
+        "type": "number",
+        "default": 1600,
+        "minimum": 400,
+        "maximum": 8000,
+        "description": "Character cap for brain_replay."
+      },
+      "metaToolMaxChars": {
+        "type": "number",
+        "default": 2400,
+        "minimum": 400,
+        "maximum": 12000,
+        "description": "Character cap for brain_changes / brain_conflicts / brain_briefing / brain_forget_impact / brain_list_open."
       }
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/d616eef61e7bfdae/index.js"
+    "entry": "dist/control-ui/c9325d63ae876dc5/index.js"
   },
   "uiHints": {
     "brainToken": {

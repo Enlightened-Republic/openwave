@@ -3,7 +3,7 @@ import { expect, test } from "vitest";
 import plugin from "../src/index.js";
 import { makeMockApi } from "./mock-api.js";
 
-test("register wires the expected hooks and 16 tools", () => {
+test("register wires the expected hooks and 36 tools", () => {
   const { api, rec } = makeMockApi({ enabled: true, config: { agents: ["main"] } });
   plugin.register(api as never);
 
@@ -15,6 +15,6 @@ test("register wires the expected hooks and 16 tools", () => {
     expect(rec.hooks.has(h), `hook not registered: ${h}`).toBe(true);
   }
 
-  expect(rec.tools).toHaveLength(16);
+  expect(rec.tools).toHaveLength(36);
   expect(rec.lifecycles).toHaveLength(1);
 });

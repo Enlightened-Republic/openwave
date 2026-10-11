@@ -2,8 +2,8 @@
 //
 // index.ts calls registerRemoteMode() INSTEAD of the local wiring, so in remote
 // mode none of the local code paths run and no local brain.db is ever opened:
-// nothing here calls core.getDb / any sharpwave-core function that touches
-// SQLite. The sharpwave-core functions used are pure (tool definitions,
+// nothing here calls core.getDb / any xanima-core function that touches
+// SQLite. The xanima-core functions used are pure (tool definitions,
 // importance scoring, the in-memory extraction queue + its LLM/heuristic
 // extractor). The brain service owns storage AND sleep.
 //
@@ -16,8 +16,8 @@
 //     session_end and hourly and written to the service with brain_write.
 //   - memory corpus supplement → brain_query.
 
-import * as core from "sharpwave-core";
-import { BRAIN_TOOL_DEFS } from "sharpwave-core";
+import * as core from "xanima-core";
+import { BRAIN_TOOL_DEFS } from "xanima-core";
 import { capImportance, classifyOrigin, readOwnerAllowFrom } from "../provenance.js";
 import { CONSOLIDATION_CRON_ID, type CronService } from "../engram-graft.js";
 import { RemoteBrainClient, RemoteBrainError, checkHealth } from "./client.js";
@@ -34,6 +34,7 @@ import {
 import type { BrainConnectionInfo } from "../settings-contract.js";
 import { AgentRoster, Provisioner, isDynamicAgents, type AgentsSpec, type AutoAgentsConfig } from "./agents.js";
 import { NoisePairTracker, classifySystemTurn, isHeartbeatSessionKey, resolveSystemNoiseSettings, type InputProvenanceLike, type TurnSignals } from "../system-noise.js";
+import { AlignmentAckTracker } from "../alignment-ack.js";
 
 /** Local-only features that are switched off in remote mode (listed in the PR / README). */
 export const REMOTE_DISABLED_FEATURES: readonly string[] = [
@@ -68,16 +69,48 @@ export const REMOTE_TOOL_NAMES = [
   "brain_forget",
   "brain_edges",
   "brain_reset",
+  "brain_retract",
+  "brain_status",
+  // Xanima 0.2.0 decision ledger + goals (private brain only on the service)
+  "brain_record_decision",
+  "brain_update_decision_outcome",
+  "brain_query_decisions",
+  "brain_set_goal",
+  "brain_update_goal",
+  "brain_list_goals",
+  // Xanima 0.3.0 reflection, replay, open items, commitments, plans, meta-tools (private brain only)
+  "brain_reflect",
+  "brain_replay",
+  "brain_hypothesis",
+  "brain_question",
+  "brain_list_open",
+  "brain_commit",
+  "brain_commitments",
+  "brain_plan",
+  "brain_changes",
+  "brain_conflicts",
+  "brain_briefing",
+  "brain_forget_impact",
+  // Xanima 0.4.0 Soul Package: export of SELF only (agent-safe). brain_review (above) also carries the review-queue
+  // mode; its accept / reject and brain_import_soul need an admin token on the service — import / merge stay CLI.
+  "brain_export_soul",
 ] as const;
 
-// Copied verbatim from sharpwave-core buildRecallContext so the injected block
+/** Service plumbing (xanima-server >= 0.2.0): alignment note + goal triggers for this turn. Not exposed to the model. */
+export const TURN_CONTEXT_TOOL = "brain_turn_context";
+const CONTINUITY_TOOLS = new Set<string>(["brain_record_decision", "brain_update_decision_outcome", "brain_query_decisions", "brain_set_goal", "brain_update_goal", "brain_list_goals",
+  "brain_reflect", "brain_replay", "brain_hypothesis", "brain_question", "brain_list_open", "brain_commit", "brain_commitments", "brain_plan", "brain_changes", "brain_conflicts", "brain_briefing", "brain_forget_impact", "brain_export_soul"]);
+
+// Copied verbatim from xanima-core buildRecallContext so the injected block
 // is byte-identical in shape to local mode.
 export const RECALL_BLOCK_HEADER =
   "[BRAIN: on your mind — ·gist items are rough unattributed fragments; do not assert them as facts about Hailey without checking]";
 export const REMOTE_BANNER =
-  "[SharpWave remote] Memory is served by the SharpWave brain service; relevant memories (your private brain + shared) are pre-loaded below. Use brain_query for deep recall, brain_write to record new facts.";
+  "[Xanima remote] Memories from the Xanima brain service (private + shared) are pre-loaded below with their age; (?) = low confidence. Tools: brain_query (as_of = what you believed then), brain_write, brain_retract / brain_supersede (give a reason), brain_status, brain_record_decision / brain_set_goal, brain_plan / brain_commit, brain_briefing / brain_changes to catch up.";
 export const REMOTE_DOWN_NOTICE =
-  "[SharpWave remote] Brain service unavailable this turn — no memories were loaded; brain_* tools may fail until it recovers.";
+  "[Xanima remote] Brain service unavailable this turn — no memories were loaded; brain_* tools may fail until it recovers.";
+/** How long a remote brain_status result is reused for the injection footer. */
+const STATUS_TTL_MS = 10 * 60 * 1000;
 
 const WARN_INTERVAL_MS = 60_000;
 const HARVEST_INTERVAL_MS = 60 * 60 * 1000;
@@ -105,7 +138,7 @@ type Api = any;
 function logFields(fields: Record<string, string | number | boolean | undefined>): string {
   const filtered: Record<string, string | number | boolean> = {};
   for (const [k, v] of Object.entries(fields)) if (v !== undefined) filtered[k] = v;
-  return `[openwave] ${JSON.stringify(filtered)}`;
+  return `[xanima] ${JSON.stringify(filtered)}`;
 }
 
 /** Rate-limits a warning per key; reports how many were suppressed. */
@@ -134,6 +167,8 @@ function remoteToolSchema(name: string): { description: string; parameters: Reco
   if (name === "brain_query") {
     props["scope"] = { type: "string", enum: ["all", "private", "shared"], description: 'Which brains to search: "all" (default: private + shared), "private", or "shared".' };
     props["format"] = { type: "string", enum: ["text", "json"], description: "Output format (default text)." };
+  } else if (name === "brain_status") {
+    props["visibility"] = { type: "string", enum: ["all", "private", "shared"], description: "Which brain(s) to report (default all)." };
   } else if (name === "brain_stats") {
     props["visibility"] = { type: "string", enum: ["all", "private", "shared"], description: "Which brain(s) to report (default all)." };
     props["format"] = { type: "string", enum: ["text", "json"], description: "Output format (default text)." };
@@ -141,11 +176,13 @@ function remoteToolSchema(name: string): { description: string; parameters: Reco
     // The service also accepts format (text|json) here; keep the published schema in sync.
     props["visibility"] = { ...vis, description: "Which brain holds the node. Default: your private brain, then shared." };
     props["format"] = { type: "string", enum: ["text", "json"], description: "Output format (default text)." };
+  } else if (CONTINUITY_TOOLS.has(name)) {
+    // decisions and goals live in the caller's private brain; no visibility arg
   } else {
     props["visibility"] = vis;
   }
   const descriptions: Record<string, string> = {
-    brain_query: "Search your private brain and the shared brain on the SharpWave brain service. Results are merged and labelled [private] or [shared].",
+    brain_query: "Search your private brain and the shared brain on the Xanima brain service. Results are merged and labelled [private] or [shared], with confidence, source and age. Pass as_of to see what you believed at a past time.",
     brain_write: 'Store a new memory in your private brain (default) or, with visibility:"shared" and the shared-write scope, in the shared brain. The writer is always your agent (stamped by the service).',
   };
   return {
@@ -158,7 +195,14 @@ function remoteToolSchema(name: string): { description: string; parameters: Reco
   };
 }
 
-type QueryHit = { brain: "private" | "shared"; id: string; type: string; label: string; content: string; score: number; writer: string | null };
+type QueryHit = {
+  brain: "private" | "shared"; id: string; type: string; label: string; content: string; score: number; writer: string | null;
+  // Xanima 0.1.0 belief fields (absent on older services / beliefMetadata off)
+  confidence?: string; confidence_score?: number | null; source_type?: string; created_at?: number;
+  contradicted_at?: number | null; sensitivity?: string;
+};
+
+export type RecallLabelOpts = { relativeTime?: boolean; beliefMetadata?: boolean; lowThreshold?: number; now?: number };
 
 export function parseQueryJson(text: string): QueryHit[] {
   try {
@@ -170,7 +214,7 @@ export function parseQueryJson(text: string): QueryHit[] {
 }
 
 /** Same line format as core.buildRecallContext; shared hits carry a ·shared tag in the provenance slot. */
-export function formatRecallBlock(hits: QueryHit[], surface: "voice" | "chat", externalMemoryActive: boolean): string {
+export function formatRecallBlock(hits: QueryHit[], surface: "voice" | "chat", externalMemoryActive: boolean, labels: RecallLabelOpts = {}): string {
   let rows = hits;
   // Graft A: when the host curated tier (MEMORY.md/USER.md) owns durable
   // identity/goals, don't inject them a second time from the graph.
@@ -180,7 +224,10 @@ export function formatRecallBlock(hits: QueryHit[], surface: "voice" | "chat", e
   const contentMax = surface === "voice" ? 120 : 200;
   const lines = rows.slice(0, cap).map((h) => {
     const tag = h.brain === "shared" ? "·shared" : "";
-    return `[${h.type}${tag}] ${h.label}: ${String(h.content ?? "").slice(0, contentMax)}`;
+    const belief = labels.beliefMetadata === false
+      ? (labels.relativeTime !== false && h.created_at ? core.relativeTime(h.created_at, labels.now) : "")
+      : core.beliefTag(h, { now: labels.now, relativeTime: labels.relativeTime !== false, lowThreshold: labels.lowThreshold });
+    return `[${h.type}${tag}] ${h.label}: ${String(h.content ?? "").slice(0, contentMax)}${belief ? ` (${belief})` : ""}`;
   });
   return `${RECALL_BLOCK_HEADER}\n${lines.join("\n")}`;
 }
@@ -229,6 +276,7 @@ export function registerRemoteMode(
   // neither brain_episode_append nor the harvest's brain_write ever sees them.
   const noise = resolveSystemNoiseSettings(config);
   const noisePairs = new NoisePairTracker();
+  const alignmentAcks = new AlignmentAckTracker();
   let noiseSkipped = 0;
   if (noise.invalidPatterns.length) log.warn(logFields({ op: "system_noise.patterns", outcome: "invalid", count: noise.invalidPatterns.length, note: "ignored invalid systemTurnPatterns entries" }));
   /** True when the turn must not be written to memory (logged at debug). */
@@ -264,7 +312,7 @@ export function registerRemoteMode(
         : `remote mode serves only "${(config.agents as string[])[0]}" with a single token; this agent gets no memory. Use brainTokenFile with {agentId}.` }));
       return;
     }
-    const t = loadToken(config, agentId);
+    const t = loadToken(config, agentId, process.env, (m) => log.warn(m));
     if (!t.ok) {
       conns.set(agentId, { agentId, client: null, tokenSource: t.source, status: "misconfigured", lastError: t.reason });
       // A missing file that autoProvision will create is not an error yet.
@@ -274,7 +322,7 @@ export function registerRemoteMode(
       return;
     }
     if (t.source === "inline") {
-      log.warn(logFields({ agentId, op: "remote.token", outcome: "ok", tokenSource: "inline", note: "brainToken is stored in openclaw.json; prefer brainTokenFile or $OPENWAVE_BRAIN_TOKEN" }));
+      log.warn(logFields({ agentId, op: "remote.token", outcome: "ok", tokenSource: "inline", note: "brainToken is stored in openclaw.json; prefer brainTokenFile or $XANIMA_BRAIN_TOKEN" }));
     }
     conns.set(agentId, {
       agentId,
@@ -333,7 +381,7 @@ export function registerRemoteMode(
     if (e.kind === "unauthorized") {
       log.error(logFields({
         agentId, op, outcome: "unauthorized", status: e.status,
-        error: `BAD BRAIN TOKEN: the brain service at ${settings.url} rejected the token for agent "${agentId}" (source=${c?.tokenSource ?? "?"}). Mint a new one with \`sharpwave-server token mint --agent <id>\` and update brainTokenFile. Memory is OFF for this agent until fixed.`,
+        error: `BAD BRAIN TOKEN: the brain service at ${settings.url} rejected the token for agent "${agentId}" (source=${c?.tokenSource ?? "?"}). Mint a new one with \`xanima-server token mint --agent <id>\` and update brainTokenFile. Memory is OFF for this agent until fixed.`,
         ...(suppressed ? { suppressed } : {}),
       }));
     } else {
@@ -390,8 +438,8 @@ export function registerRemoteMode(
           if (!r) {
             const st = conns.get(who.agentId);
             return brainToolResult(st?.status === "unauthorized"
-              ? `Error: the SharpWave brain service rejected this agent's token — memory is unavailable until the token is fixed.`
-              : `Error: the SharpWave brain service is unreachable (${st?.lastError ?? "unknown error"}). Try again later.`, { isError: true });
+              ? `Error: the Xanima brain service rejected this agent's token — memory is unavailable until the token is fixed.`
+              : `Error: the Xanima brain service is unreachable (${st?.lastError ?? "unknown error"}). Try again later.`, { isError: true });
           }
           return brainToolResult(r.text, { isError: r.isError });
         },
@@ -403,7 +451,7 @@ export function registerRemoteMode(
   // ── Memory supplements ────────────────────────────────────────────────────
   try {
     api.registerMemoryPromptSupplement?.(() => [
-      "[openwave] graph memory active (remote SharpWave brain service) — call brain_query for deep recall.",
+      "[xanima] graph memory active (remote Xanima brain service) — call brain_query for deep recall.",
     ]);
   } catch (err) {
     log.warn(logFields({ op: "registerMemoryPromptSupplement", outcome: "error", error: String(err) }));
@@ -443,7 +491,7 @@ export function registerRemoteMode(
       if (c.episodeAppend !== has) {
         log.info(logFields({
           agentId, op: "remote.episode_append", outcome: has ? "enabled" : "unsupported",
-          ...(has ? {} : { note: "brain service does not advertise brain_episode_append; episodes are not stored (upgrade sharpwave-server)" }),
+          ...(has ? {} : { note: "brain service does not advertise brain_episode_append; episodes are not stored (upgrade xanima-server)" }),
         }));
       }
       c.episodeAppend = has;
@@ -454,6 +502,25 @@ export function registerRemoteMode(
       reportFailure(agentId, "remote.episode_append.detect", e);
       return false;
     }
+  };
+  // brain_status footer (Xanima 0.1.0): one line, only when something needs
+  // attention. Fetched at most every STATUS_TTL_MS per agent so the hot path
+  // stays one round-trip; a failure just means no footer.
+  const statusCache = new Map<string, { at: number; footer: string }>();
+  const statusFooterFor = async (agentId: string): Promise<string> => {
+    const hit = statusCache.get(agentId);
+    if (hit && Date.now() - hit.at < STATUS_TTL_MS) return hit.footer;
+    let footer = "";
+    const r = await call(agentId, "before_prompt_build.status", "brain_status", { format: "json", visibility: "private" });
+    if (r && !r.isError) {
+      try {
+        const body = JSON.parse(r.text) as { brains?: Array<{ attention?: string[] }> };
+        const attention = (body.brains ?? []).flatMap((b) => b.attention ?? []);
+        if (attention.length) footer = `[BRAIN: status] ${attention.slice(0, 2).join("; ")} — call brain_status for details.`;
+      } catch { /* older service: no footer */ }
+    }
+    statusCache.set(agentId, { at: Date.now(), footer });
+    return footer;
   };
   const appendEpisodeRemote = (agentId: string, sessionId: string, role: "user" | "assistant" | "tool", content: string, importance: number): void => {
     const conn = conns.get(agentId);
@@ -692,6 +759,7 @@ export function registerRemoteMode(
     recordHook(agentId, hookCtx);
   }, { priority: 0, timeoutMs: 200 });
 
+  const turnContextUnsupported = new Set<string>();
   api.on("before_prompt_build", async (event: { prompt?: string; messages?: Array<{ role?: string; content?: unknown }>; kind?: string }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string }) => {
     try {
       const t0 = Date.now();
@@ -728,13 +796,49 @@ export function registerRemoteMode(
         });
         if (!r) down = true;
         else if (r.isError) log.debug?.(logFields({ agentId, op: "before_prompt_build.recall", outcome: "tool_error", error: r.text.slice(0, 200) }));
-        else block = formatRecallBlock(parseQueryJson(r.text), surface, helpers.contextOptsFor(agentId).externalMemoryActive);
+        else block = formatRecallBlock(parseQueryJson(r.text), surface, helpers.contextOptsFor(agentId).externalMemoryActive, {
+          relativeTime: config.relativeTimeLabels !== false,
+          beliefMetadata: config.beliefMetadata !== false,
+          lowThreshold: config.lowConfidenceThreshold,
+        });
       } else if (conn.status === "unreachable" || conn.status === "unauthorized") {
         down = true;
       }
 
+      // Xanima 0.2.0: alignment note (offered; acked after a real reply) + goal triggers from the service.
+      let goalsBlock = "";
+      if (!down && surface !== "voice" && !(config.intentDriftCheck === "off" && config.goalTriggers === false) && !turnContextUnsupported.has(agentId)) {
+        const g = await call(agentId, "before_prompt_build.goals", TURN_CONTEXT_TOOL, { query: (query ?? "").slice(0, 2000) });
+        if (g && !g.isError) {
+          try {
+            const parsed = JSON.parse(g.text) as { text?: string; noteId?: number | null; noteIds?: number[]; identity?: string; activeGoals?: string[] };
+            goalsBlock = String(parsed.text ?? "");
+            // Xanima 0.4.0 soulHeader: the brain's identity (and optionally its top active goals) as a short header —
+            // parity with local mode's never-compacted header, so a soul imported into a fresh brain is visible.
+            // Unset (default "identity"): skipped when MEMORY.md / USER.md owns identity (externalMemoryActive).
+            // Set explicitly by the operator: honoured even then. Empty identity → nothing.
+            const explicit = (config as { soulHeader?: unknown }).soulHeader;
+            const sh = String(explicit ?? "identity");
+            if (sh !== "off" && (explicit !== undefined || !helpers.contextOptsFor(agentId).externalMemoryActive)) {
+              const lines: string[] = [];
+              if (parsed.identity) lines.push(`[BRAIN: identity] ${String(parsed.identity).replace(/\s+/g, " ").slice(0, 400)}`);
+              if (sh === "identity+goals" && Array.isArray(parsed.activeGoals) && parsed.activeGoals.length) lines.push(`[BRAIN: active goals] ${parsed.activeGoals.map((t) => String(t).slice(0, 80)).join(" · ")}`);
+              if (lines.length) goalsBlock = goalsBlock ? `${lines.join("\n")}\n\n${goalsBlock}` : lines.join("\n");
+            }
+            alignmentAcks.offer(agentId, Array.isArray(parsed.noteIds) ? parsed.noteIds : parsed.noteId);
+          } catch { /* ignore */ }
+        } else if (g?.isError && /unknown tool/i.test(g.text)) {
+          turnContextUnsupported.add(agentId); // older service: stop asking
+        }
+      }
+      if (goalsBlock) block = block ? `${goalsBlock}\n\n${block}` : goalsBlock;
+
       const result: { appendSystemContext?: string; prependContext?: string } = {};
       if (surface !== "voice") result.appendSystemContext = down ? REMOTE_DOWN_NOTICE : REMOTE_BANNER;
+      if (!down && surface !== "voice" && config.selfStatus !== false) {
+        const footer = await statusFooterFor(agentId);
+        if (footer) result.appendSystemContext = `${result.appendSystemContext}\n${footer}`;
+      }
       if (block) result.prependContext = block;
       log.debug?.(logFields({ agentId, op: "before_prompt_build", outcome: down ? "degraded" : "ok", brainMode: "remote", durationMs: Date.now() - t0, prependChars: block.length }));
       if (!result.appendSystemContext && !result.prependContext) return;
@@ -772,6 +876,11 @@ export function registerRemoteMode(
     }
   });
 
+  api.on("before_tool_call", (event: { toolName?: string; params?: Record<string, unknown> }, hookCtx: AgentHookCtx) => {
+    try { alignmentAcks.toolCall(helpers.resolveAgentId(undefined, hookCtx), event?.toolName, event?.params); } catch { /* observe only */ }
+    return undefined;
+  });
+
   api.on("llm_output", async (event: { assistantTexts?: string[]; content?: string; prompt?: string }, hookCtx: AgentHookCtx) => {
     try {
       const agentId = helpers.resolveAgentId(undefined, hookCtx);
@@ -784,6 +893,9 @@ export function registerRemoteMode(
       const paired = noise.enabled && noisePairs.takeReplySkip(sessionKey);
       if (paired) { noiseSkipped++; log.debug?.(logFields({ agentId, op: "llm_output", outcome: "skipped_system_noise", reason: "pair:reply_to_skipped_user_turn", via: "session", role: "assistant" })); return; }
       if (skipTurn(agentId, "llm_output", { role: "assistant", content, sessionKey, trigger: hookCtx?.trigger, inputProvenance: hookCtx?.inputProvenance, prompt: event?.prompt })) return;
+      const ackIds = alignmentAcks.repliedAll(agentId, content);
+      if (ackIds.length === 1) void call(agentId, "llm_output.alignment_ack", TURN_CONTEXT_TOOL, { ack_note_id: ackIds[0] }); // 0.2.0 services take the single form
+      else if (ackIds.length > 1) void call(agentId, "llm_output.alignment_ack", TURN_CONTEXT_TOOL, { ack_note_ids: ackIds });
       const isCron = /^agent:[^:]+:cron:/.test(sessionKey) || sessionKey.startsWith("cron:");
       const importance = isCron ? 0.1 : core.scoreImportance("assistant", content);
       appendEpisodeRemote(agentId, sessionKey, "assistant", content, importance);
