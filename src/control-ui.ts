@@ -38,7 +38,7 @@ const NUMBER_FIELDS: Array<{
   { key: "pruneAfterDays", label: "Prune after (days)", step: "1", min: 0 },
 ];
 
-// Reserved fields: accepted and stored today, but sharpwave-core has no
+// Reserved fields: accepted and stored today, but xanima-core has no
 // valence/arousal split yet (research/emotional-memory-openclaw-integration.md
 // proposal 3) so these have no runtime effect. Rendered disabled with a note
 // rather than hidden, so the shape is visible ahead of the engine work.
@@ -57,7 +57,7 @@ const mountSettingsPage: ControlUiView = (container, context) => {
   const host: ControlUiHost = context.host;
   const client = createFeatureClient(CONTRACT, host);
 
-  const root = el("div", "openwave-settings");
+  const root = el("div", "xanima-settings");
   root.style.padding = "16px";
   root.style.maxWidth = "480px";
   root.style.display = "flex";
@@ -68,7 +68,7 @@ const mountSettingsPage: ControlUiView = (container, context) => {
   heading.textContent = "Openwave — persona overrides";
   const subheading = el("p");
   subheading.textContent =
-    "Per-agent tuning layered over openwave's flat plugin config. Missing fields inherit the flat default.";
+    "Per-agent tuning layered over xanima's flat plugin config. Missing fields inherit the flat default.";
   subheading.style.opacity = "0.75";
   subheading.style.fontSize = "0.9em";
 
@@ -242,17 +242,17 @@ const mountSettingsPage: ControlUiView = (container, context) => {
 };
 
 export default defineControlUiPlugin({
-  id: "openwave",
+  id: "xanima",
   activate(host) {
     const disposePage = host.ui.registerPage({
-      id: "openwave-settings",
+      id: "xanima-settings",
       label: "Openwave",
       mount: mountSettingsPage,
     });
     const disposeNav = host.ui.registerNavigation({
-      id: "openwave-settings-nav",
+      id: "xanima-settings-nav",
       label: "Openwave",
-      page: { id: "openwave-settings" },
+      page: { id: "xanima-settings" },
       icon: "brain",
     });
     return () => {

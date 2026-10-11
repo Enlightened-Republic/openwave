@@ -1,7 +1,7 @@
 // Remote brain mode: config resolution and token loading.
 //
-// `brainMode: "remote"` makes openwave talk to the SharpWave brain service
-// (sharpwave-server, MCP Streamable HTTP) instead of opening brain.db
+// `brainMode: "remote"` makes xanima talk to the Xanima brain service
+// (xanima-server, MCP Streamable HTTP) instead of opening brain.db
 // in-process. Everything here is pure (no I/O except reading the token file)
 // so it can be unit-tested and so register() can resolve settings without
 // touching the network.
@@ -12,20 +12,23 @@
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { brainTokenFromEnv } from "../legacy-config.js";
 
 export type BrainMode = "local" | "remote";
 
 export const DEFAULT_BRAIN_URL = "http://127.0.0.1:18790";
 export const DEFAULT_REMOTE_TIMEOUT_MS = 2500;
-export const TOKEN_ENV_VAR = "OPENWAVE_BRAIN_TOKEN";
+export const TOKEN_ENV_VAR = "XANIMA_BRAIN_TOKEN";
+/** Deprecated name, still read in 0.1.x with a warning. */
+export const LEGACY_TOKEN_ENV_VAR = "OPENWAVE_BRAIN_TOKEN";
 
-/** The remote-mode keys in plugins.entries.openwave.config. */
+/** The remote-mode keys in plugins.entries.xanima.config. */
 export type RemoteConfigFields = {
   brainMode?: BrainMode;
   brainUrl?: string;
   /** Path to a file holding the bearer token. May contain `{agentId}` to give each served agent its own token. Preferred. */
   brainTokenFile?: string;
-  /** Inline token. Discouraged (lands in openclaw.json); prefer brainTokenFile or $OPENWAVE_BRAIN_TOKEN. */
+  /** Inline token. Discouraged (lands in openclaw.json); prefer brainTokenFile or $XANIMA_BRAIN_TOKEN. */
   brainToken?: string;
   /** Include the shared brain in per-turn recall. Default true. */
   sharedRecall?: boolean;
@@ -82,12 +85,12 @@ export function decodeTokenFile(buf: Buffer): string {
 /**
  * Resolve the bearer token for one served agent. Precedence:
  *   1. brainTokenFile (path; `{agentId}` placeholder supported)
- *   2. $OPENWAVE_BRAIN_TOKEN
+ *   2. $XANIMA_BRAIN_TOKEN
  *   3. brainToken (inline)
  * A configured-but-unreadable token file is an error; it does NOT silently fall
  * through to the env var, so a typo in the path is visible.
  */
-export function loadToken(cfg: RemoteConfigFields, agentId: string, env: NodeJS.ProcessEnv = process.env): TokenResult {
+export function loadToken(cfg: RemoteConfigFields, agentId: string, env: NodeJS.ProcessEnv = process.env, warn: (m: string) => void = (m) => { try { process.stderr.write(m + "\n"); } catch { /* */ } }): TokenResult {
   if (typeof cfg.brainTokenFile === "string" && cfg.brainTokenFile.trim()) {
     const path = expandTokenPath(cfg.brainTokenFile.trim(), agentId);
     try {
@@ -100,7 +103,7 @@ export function loadToken(cfg: RemoteConfigFields, agentId: string, env: NodeJS.
       return { ok: false, source: "file", reason: `cannot read brainTokenFile (${code}): ${path}` };
     }
   }
-  const fromEnv = env[TOKEN_ENV_VAR]?.trim();
+  const fromEnv = brainTokenFromEnv(env, warn);
   if (fromEnv) return { ok: true, token: fromEnv, source: "env" };
   if (typeof cfg.brainToken === "string" && cfg.brainToken.trim()) return { ok: true, token: cfg.brainToken.trim(), source: "inline" };
   return { ok: false, source: "none", reason: `no brain token: set brainTokenFile, $${TOKEN_ENV_VAR}, or brainToken` };

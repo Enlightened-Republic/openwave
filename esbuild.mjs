@@ -2,7 +2,7 @@ import { build } from "esbuild";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 
-// Single-file plugin bundle. `sharpwave-core` (the engine) is inlined so the
+// Single-file plugin bundle. `xanima-core` (the engine) is inlined so the
 // gateway loads one file; only the native modules and node:* stay external.
 await build({
   bundle: true,
@@ -20,10 +20,23 @@ await build({
     "sqlite-vec-windows-x64",
     "node:*",
   ],
-  banner: { js: `// openwave — built ${new Date().toISOString()}\n` },
+  banner: { js: `// xanima-openclaw — built ${new Date().toISOString()}\n` },
 });
 
-console.log("openwave built to dist/index.js");
+console.log("xanima-openclaw built to dist/index.js");
+
+// openwave → xanima config upgrade CLI (no engine, no native modules).
+await build({
+  bundle: true,
+  platform: "node",
+  target: "node22",
+  format: "esm",
+  entryPoints: ["src/upgrade-cli.ts"],
+  outfile: "dist/upgrade.js",
+  external: ["node:*"],
+  banner: { js: "#!/usr/bin/env node" },
+});
+console.log("xanima-openclaw-upgrade built to dist/upgrade.js");
 
 // Native Control UI bundle (the persona settings page).
 //
@@ -80,4 +93,4 @@ manifest.controlUi = {
 };
 writeFileSync(manifestPath, JSON.stringify(manifest, null, 2).replace(/\n/g, eol) + eol);
 
-console.log(`openwave control UI built to ${outDir}/ (${js.bytes.length} bytes js${css ? `, ${css.bytes.length} bytes css` : ""})`);
+console.log(`xanima control UI built to ${outDir}/ (${js.bytes.length} bytes js${css ? `, ${css.bytes.length} bytes css` : ""})`);

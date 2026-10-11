@@ -12,7 +12,7 @@
 //                            appended can never be extracted)
 //
 // Skipped turns are NOT appended at all (no episode, no queue entry). Why not
-// "append with a tag": the brain service's sleep (sharpwave-core runSwsPhase via
+// "append with a tag": the brain service's sleep (xanima-core runSwsPhase via
 // pickSwsEpisodes) selects every episode with importance >= 0.2 and no tag
 // filter; the heartbeat-triage nodes seen in production (source=sws, content
 // starting "NO_REPLY — <time>, <triage reasoning>") were minted from exactly such
@@ -52,7 +52,7 @@
 //                exact, leading (incl. "NO_REPLY — reasoning…"), JSON envelope,
 //                reasoning-prefixed, or trailing after a silent-intent sentence.
 //
-// sharpwave-core (packages/core/src/system-noise.ts) carries the same rules for
+// xanima-core (packages/core/src/system-noise.ts) carries the same rules for
 // the service's own sleep guard; keep the two in sync (shared fixtures in
 // test/system-noise.test.ts here and packages/core/test/system-noise.test.ts).
 

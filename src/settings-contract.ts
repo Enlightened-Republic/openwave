@@ -19,7 +19,7 @@
 // behavior per agent. `emotionalProfile` (valenceBias/arousalScale) is
 // accepted and stored ahead of time but has no runtime effect yet -- see
 // research/emotional-memory-openclaw-integration.md proposal 3
-// (sharpwave-core's valence/arousal split is not shipped). Do not wire a UI
+// (xanima-core's valence/arousal split is not shipped). Do not wire a UI
 // affordance that implies it already changes behavior.
 
 import { Type, type Static } from "typebox";
@@ -95,17 +95,17 @@ const GetBrainConnectionOutput = Type.Object({
 export type BrainConnectionInfo = Static<typeof GetBrainConnectionOutput>;
 
 export const OPENWAVE_SETTINGS_CONTRACT = {
-  pluginId: "openwave",
+  pluginId: "xanima",
   operations: {
     getPersonaConfig: {
       kind: "query",
-      description: "Read openwave's flat config defaults plus one agent's persona override and the merged effective config.",
+      description: "Read xanima's flat config defaults plus one agent's persona override and the merged effective config.",
       input: GetPersonaConfigInput,
       output: GetPersonaConfigOutput,
     },
     setPersonaOverride: {
       kind: "action",
-      description: "Merge a patch into one agent's persona override and persist it to plugins.entries.openwave.config.personaOverrides.<agentId>.",
+      description: "Merge a patch into one agent's persona override and persist it to plugins.entries.xanima.config.personaOverrides.<agentId>.",
       input: SetPersonaOverrideInput,
       output: GetPersonaConfigOutput,
     },
@@ -117,7 +117,7 @@ export const OPENWAVE_SETTINGS_CONTRACT = {
     },
     getBrainConnection: {
       kind: "query",
-      description: "Read openwave's brain mode (local | remote), the remote brain service URL, token source (never the token), and last health/auth status.",
+      description: "Read xanima's brain mode (local | remote), the remote brain service URL, token source (never the token), and last health/auth status.",
       input: GetBrainConnectionInput,
       output: GetBrainConnectionOutput,
     },

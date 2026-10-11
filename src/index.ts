@@ -2,24 +2,24 @@
 //
 // openwave — the OpenClaw plugin shell.
 //
-// Ported from `clawbrain-v4/src/index.ts` (1197 lines) onto `sharpwave-core`.
+// Ported from `clawbrain-v4/src/index.ts` (1197 lines) onto `xanima-core`.
 // Everything that made ClawBrain v4's wake-up layer work is preserved: the
 // 3-layer bootstrap injection, the per-surface (voice/chat) trims, the
 // 2026-05-16 lifecycle split, the in-process sleep-system timers, the memory
 // adapters. The only structural change is that every engine call now goes
-// through the `sharpwave-core` barrel instead of sibling-relative imports.
+// through the `xanima-core` barrel instead of sibling-relative imports.
 //
 // Task 8 extracts the in-process timers into `scheduler.ts`; they are inline
 // and working here on purpose.
 
 import { randomUUID } from "node:crypto";
 
-import * as core from "sharpwave-core";
+import * as core from "xanima-core";
 import {
   BRAIN_TOOL_DEFS,
   OPENWAVE_TOOL_NAMES,
   dispatchBrainTool,
-} from "sharpwave-core";
+} from "xanima-core";
 import { decideBootstrapDelivery, bootstrapIdempotencyKey } from "./bootstrap-delivery.js";
 import { capImportance, classifyOrigin, readOwnerAllowFrom } from "./provenance.js";
 import {
@@ -35,6 +35,7 @@ import {
   CONSOLIDATION_CRON_ID,
 } from "./engram-graft.js";
 import { OPENWAVE_SETTINGS_CONTRACT, type PersonaOverrideFields } from "./settings-contract.js";
+import { PLUGIN_ID, resolvePluginConfig } from "./legacy-config.js";
 import {
   DEFAULT_BRAIN_URL,
   DEFAULT_REMOTE_TIMEOUT_MS,
@@ -51,7 +52,7 @@ import type { BrainConnectionInfo } from "./settings-contract.js";
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 //
-// `sharpwave-core`'s BrainConfig has no `enabled` / `agents` — those are host
+// `xanima-core`'s BrainConfig has no `enabled` / `agents` — those are host
 // concerns (the MCP server pins one agent per process; openwave serves many).
 // They stay in openwave's own config type rather than being pushed into core.
 
@@ -295,7 +296,7 @@ function clearSessionAgent(sessionId: string | undefined): void {
 // Minted once per gateway process and prefixed so gateway_start can sweep
 // buckets left behind by earlier processes.
 //
-// sharpwave-core has no ephemeral-session concept (its `clearStaleWorkingMemory`
+// xanima-core has no ephemeral-session concept (its `clearStaleWorkingMemory`
 // drops EVERY working_memory row, which would wipe live sessions that legitimately
 // straddle a gateway restart), so the prefixed sweep stays here.
 const EPHEMERAL_SESSION_PREFIX = "ephemeral:";
@@ -357,7 +358,7 @@ function logFields(fields: StructuredFields): string {
   for (const [k, v] of Object.entries(fields)) {
     if (v !== undefined) filtered[k] = v;
   }
-  return `[openwave] ${JSON.stringify(filtered)}`;
+  return `[xanima] ${JSON.stringify(filtered)}`;
 }
 
 // ── Agent ID resolution ────────────────────────────────────────────────────────
@@ -482,10 +483,10 @@ function registerPersonaSettingsFeature(
           mutate(draft) {
             draft.plugins ??= {};
             draft.plugins.entries ??= {};
-            draft.plugins.entries.openwave ??= {};
-            draft.plugins.entries.openwave.config ??= {};
-            draft.plugins.entries.openwave.config.personaOverrides ??= {};
-            draft.plugins.entries.openwave.config.personaOverrides[agentId] = nextOverride;
+            draft.plugins.entries[PLUGIN_ID] ??= {};
+            draft.plugins.entries[PLUGIN_ID].config ??= {};
+            draft.plugins.entries[PLUGIN_ID].config.personaOverrides ??= {};
+            draft.plugins.entries[PLUGIN_ID].config.personaOverrides[agentId] = nextOverride;
           },
         });
       } catch (err) {
@@ -523,7 +524,7 @@ function registerPersonaSettingsFeature(
         await mutateConfigFile({
           afterWrite: { mode: "auto" },
           mutate(draft) {
-            const overrides = draft.plugins?.entries?.openwave?.config?.personaOverrides;
+            const overrides = draft.plugins?.entries?.[PLUGIN_ID]?.config?.personaOverrides;
             if (!overrides) return;
             if (clearWhole) delete overrides[agentId];
             else overrides[agentId] = current;
@@ -619,13 +620,19 @@ async function removeLegacyCronJobs(
 // ── Plugin entry ───────────────────────────────────────────────────────────────
 
 export default definePluginEntry({
-  id: "openwave",
-  name: "openwave",
+  id: PLUGIN_ID,
+  name: "xanima",
   description:
-    "Autonomic wake-up memory for OpenClaw agents. Injects identity, goals and query-relevant recall into every turn, and runs the sleep system (consolidation, awake replay, extraction) in-process. Powered by sharpwave-core.",
+    "Xanima (formerly openwave): autonomic memory and agent continuity for OpenClaw agents. Injects identity, goals and query-relevant recall (with confidence and relative-time labels) into every turn, and runs the sleep system in-process or on the Xanima brain service. Powered by xanima-core.",
   register(api: OpenClawPluginApi): void {
     // openclaw.json structure: { enabled, hooks, config: { agents, contextBudget, ... } }
-    const rawPluginConfig = (api.pluginConfig as Record<string, unknown>) ?? {};
+    // 0.1.x: an empty xanima entry falls back to the old plugins.entries.openwave block.
+    const resolvedRaw = resolvePluginConfig(
+      (api.pluginConfig as Record<string, unknown>) ?? {},
+      (() => { try { return api.runtime?.config?.current?.(); } catch { return undefined; } })(),
+      (m) => (api.logger?.warn ?? (() => {}))(m),
+    );
+    const rawPluginConfig = resolvedRaw.raw;
     const brainSettings = (rawPluginConfig.config as Partial<OpenwaveConfig>) ?? (rawPluginConfig as Partial<OpenwaveConfig>);
     const config: OpenwaveConfig = {
       ...DEFAULT_OPENWAVE_CONFIG,
@@ -654,8 +661,8 @@ export default definePluginEntry({
     }
 
     // When the host already curates MEMORY.md/USER.md (OpenClaw memory-core) for an
-    // agent, that tier owns durable identity/goals: tell sharpwave-core to skip them so
-    // the agent isn't handed two copies (Engram Graft A widens this in sharpwave-core).
+    // agent, that tier owns durable identity/goals: tell xanima-core to skip them so
+    // the agent isn't handed two copies (Engram Graft A widens this in xanima-core).
     // Presence check only, evaluated per call so a MEMORY.md curated mid-run takes
     // effect without a restart; fails closed (false = inject as usual) on older hosts.
     // `curatedTierDedupe: false` turns it off. See engram-graft.ts / memory-detection.ts.
@@ -693,8 +700,8 @@ export default definePluginEntry({
         }
       }
       if (!candidate && tc?.sessionKey?.startsWith("agent:")) candidate = tc.sessionKey.split(":")[1];
-      if (!candidate) return { error: "openwave: cannot determine which agent is calling this tool, so it refused to touch any brain." };
-      if (!isServed(candidate)) return { error: `openwave is not serving agent "${candidate}" (plugins.entries.openwave.config.agents), so it refused to touch its brain.` };
+      if (!candidate) return { error: "xanima: cannot determine which agent is calling this tool, so it refused to touch any brain." };
+      if (!isServed(candidate)) return { error: `xanima is not serving agent "${candidate}" (plugins.entries.xanima.config.agents), so it refused to touch its brain.` };
       return { agentId: candidate };
     };
 
@@ -787,7 +794,7 @@ export default definePluginEntry({
       api.registerMemoryPromptSupplement?.(() => {
         // Lightweight additive prompt — the bulk of memory comes through
         // the appendSystemContext / prependContext channels we own.
-        return ["[openwave] graph memory active — call brain_query/brain_history for deep recall."];
+        return ["[xanima] graph memory active — call brain_query/brain_history for deep recall."];
       });
     } catch (err) {
       log.warn(logFields({ op: "registerMemoryPromptSupplement", outcome: "error", error: String(err) }));
@@ -1301,6 +1308,15 @@ export default definePluginEntry({
 
       const result: { appendSystemContext?: string; prependContext?: string } = {};
       if (selfModelHeader) result.appendSystemContext = selfModelHeader;
+      // Xanima: one-line memory self-status, only when something needs attention.
+      if (surface !== "voice") {
+        try {
+          const footer = core.buildStatusFooter(agentId, config);
+          if (footer) result.appendSystemContext = result.appendSystemContext ? `${result.appendSystemContext}\n${footer}` : footer;
+        } catch (err) {
+          log.debug?.(logFields({ agentId, op: "before_prompt_build.status", outcome: "error", error: String(err) }));
+        }
+      }
       if (parts.length > 0) result.prependContext = parts.join("\n\n");
 
       log.debug?.(logFields({
@@ -1516,7 +1532,7 @@ export default definePluginEntry({
       outcome: "ok",
       agents: config.agents.length,
       tools: OPENWAVE_TOOL_NAMES.length,
-      engine: "sharpwave-core",
+      engine: "xanima-core",
       // LLM-route diagnostics (booleans/model-id only, never key material):
       // added 2026-07-13 when REM fell back to keyword mode despite the nvidia
       // ingestionModel being configured — makes key/config delivery visible.

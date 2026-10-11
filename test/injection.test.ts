@@ -1,15 +1,15 @@
 import { expect, test } from "vitest";
 
-import * as core from "sharpwave-core";
+import * as core from "xanima-core";
 import plugin from "../src/index.js";
 import { makeMockApi } from "./mock-api.js";
 
 // Marker that only the BOOTSTRAP block carries (context-assembly.ts BRAIN_HEADER).
-// The self-model header is "[SharpWave] Identity..." — a different string —
+// The self-model header is "[Xanima] Identity..." — a different string —
 // so this distinguishes "bootstrap was injected into prependContext" from the
 // always-on self-model header on appendSystemContext.
-const BOOTSTRAP_MARKER = "[SharpWave active]";
-const SELF_MODEL_MARKER = "[SharpWave]";
+const BOOTSTRAP_MARKER = "[Xanima active]";
+const SELF_MODEL_MARKER = "[Xanima]";
 
 function seed(agentId: string): void {
   core.writeNode(agentId, "semantic", "db", "Production uses PostgreSQL 16.", { importance: 0.8 });
