@@ -378,6 +378,16 @@
         "default": true,
         "description": "Keyword / time triggers that surface a goal when it becomes relevant."
       },
+      "soulHeader": {
+        "type": "string",
+        "enum": [
+          "off",
+          "identity",
+          "identity+goals"
+        ],
+        "default": "identity",
+        "description": "Remote mode (0.4.0): show the brain's identity line (and optionally its top 3 active goals) each turn, like local mode's header. Nothing is shown while identity is empty or MEMORY.md / USER.md owns identity."
+      },
       "alignmentNoteMaxTokens": {
         "type": "number",
         "default": 60,

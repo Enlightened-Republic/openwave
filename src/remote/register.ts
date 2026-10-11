@@ -811,8 +811,18 @@ export function registerRemoteMode(
         const g = await call(agentId, "before_prompt_build.goals", TURN_CONTEXT_TOOL, { query: (query ?? "").slice(0, 2000) });
         if (g && !g.isError) {
           try {
-            const parsed = JSON.parse(g.text) as { text?: string; noteId?: number | null; noteIds?: number[] };
+            const parsed = JSON.parse(g.text) as { text?: string; noteId?: number | null; noteIds?: number[]; identity?: string; activeGoals?: string[] };
             goalsBlock = String(parsed.text ?? "");
+            // Xanima 0.4.0 soulHeader: the brain's identity (and optionally its top active goals) as a short header —
+            // parity with local mode's never-compacted header, so a soul imported into a fresh brain is visible.
+            // Skipped when MEMORY.md / USER.md owns identity (externalMemoryActive). Empty identity → nothing.
+            const sh = String(config.soulHeader ?? "identity");
+            if (sh !== "off" && !helpers.contextOptsFor(agentId).externalMemoryActive) {
+              const lines: string[] = [];
+              if (parsed.identity) lines.push(`[BRAIN: identity] ${String(parsed.identity).replace(/\s+/g, " ").slice(0, 400)}`);
+              if (sh === "identity+goals" && Array.isArray(parsed.activeGoals) && parsed.activeGoals.length) lines.push(`[BRAIN: active goals] ${parsed.activeGoals.map((t) => String(t).slice(0, 80)).join(" · ")}`);
+              if (lines.length) goalsBlock = goalsBlock ? `${lines.join("\n")}\n\n${goalsBlock}` : lines.join("\n");
+            }
             alignmentAcks.offer(agentId, Array.isArray(parsed.noteIds) ? parsed.noteIds : parsed.noteId);
           } catch { /* ignore */ }
         } else if (g?.isError && /unknown tool/i.test(g.text)) {

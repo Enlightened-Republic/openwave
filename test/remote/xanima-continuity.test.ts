@@ -73,4 +73,13 @@ describe.skipIf(!HAVE_SERVER)("xanima 0.2.0 remote continuity (real xanima-serve
     expect(txt).toMatch(/Decision: Resend .*auto-extracted draft/);
     expect(txt).toMatch(/chose: Resend\s+\(over: SES\)/);
   });
+  test("soulHeader (0.4.0): the brain's identity line is shown once identity is set (nothing while it is empty)", async () => {
+    expect(await turn("hi again")).not.toContain("[BRAIN: identity]");
+    const db = new Database(join(svc.root, "brains", AGENT, "brain.db"));
+    db.prepare("UPDATE self_model SET identity = ? WHERE id = 'singleton'").run("I am Xacont, a careful billing assistant.");
+    db.close();
+    const p = await turn("hi once more");
+    expect(p).toMatch(/^\[BRAIN: identity\] I am Xacont, a careful billing assistant\./);
+    expect(p).not.toContain("[BRAIN: active goals]"); // goals line is opt-in (soulHeader: "identity+goals")
+  });
 });
