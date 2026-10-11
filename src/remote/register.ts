@@ -34,6 +34,7 @@ import {
 import type { BrainConnectionInfo } from "../settings-contract.js";
 import { AgentRoster, Provisioner, isDynamicAgents, type AgentsSpec, type AutoAgentsConfig } from "./agents.js";
 import { NoisePairTracker, classifySystemTurn, isHeartbeatSessionKey, resolveSystemNoiseSettings, type InputProvenanceLike, type TurnSignals } from "../system-noise.js";
+import { AlignmentAckTracker } from "../alignment-ack.js";
 
 /** Local-only features that are switched off in remote mode (listed in the PR / README). */
 export const REMOTE_DISABLED_FEATURES: readonly string[] = [
@@ -258,6 +259,7 @@ export function registerRemoteMode(
   // neither brain_episode_append nor the harvest's brain_write ever sees them.
   const noise = resolveSystemNoiseSettings(config);
   const noisePairs = new NoisePairTracker();
+  const alignmentAcks = new AlignmentAckTracker();
   let noiseSkipped = 0;
   if (noise.invalidPatterns.length) log.warn(logFields({ op: "system_noise.patterns", outcome: "invalid", count: noise.invalidPatterns.length, note: "ignored invalid systemTurnPatterns entries" }));
   /** True when the turn must not be written to memory (logged at debug). */
@@ -786,12 +788,16 @@ export function registerRemoteMode(
         down = true;
       }
 
-      // Xanima 0.2.0: alignment note (delivered once) + goal triggers from the service.
+      // Xanima 0.2.0: alignment note (offered; acked after a real reply) + goal triggers from the service.
       let goalsBlock = "";
       if (!down && surface !== "voice" && !(config.intentDriftCheck === "off" && config.goalTriggers === false) && !turnContextUnsupported.has(agentId)) {
         const g = await call(agentId, "before_prompt_build.goals", TURN_CONTEXT_TOOL, { query: (query ?? "").slice(0, 2000) });
         if (g && !g.isError) {
-          try { goalsBlock = String((JSON.parse(g.text) as { text?: string }).text ?? ""); } catch { /* ignore */ }
+          try {
+            const parsed = JSON.parse(g.text) as { text?: string; noteId?: number | null };
+            goalsBlock = String(parsed.text ?? "");
+            alignmentAcks.offer(agentId, parsed.noteId);
+          } catch { /* ignore */ }
         } else if (g?.isError && /unknown tool/i.test(g.text)) {
           turnContextUnsupported.add(agentId); // older service: stop asking
         }
@@ -841,6 +847,11 @@ export function registerRemoteMode(
     }
   });
 
+  api.on("before_tool_call", (event: { toolName?: string; params?: Record<string, unknown> }, hookCtx: AgentHookCtx) => {
+    try { alignmentAcks.toolCall(helpers.resolveAgentId(undefined, hookCtx), event?.toolName, event?.params); } catch { /* observe only */ }
+    return undefined;
+  });
+
   api.on("llm_output", async (event: { assistantTexts?: string[]; content?: string; prompt?: string }, hookCtx: AgentHookCtx) => {
     try {
       const agentId = helpers.resolveAgentId(undefined, hookCtx);
@@ -853,6 +864,8 @@ export function registerRemoteMode(
       const paired = noise.enabled && noisePairs.takeReplySkip(sessionKey);
       if (paired) { noiseSkipped++; log.debug?.(logFields({ agentId, op: "llm_output", outcome: "skipped_system_noise", reason: "pair:reply_to_skipped_user_turn", via: "session", role: "assistant" })); return; }
       if (skipTurn(agentId, "llm_output", { role: "assistant", content, sessionKey, trigger: hookCtx?.trigger, inputProvenance: hookCtx?.inputProvenance, prompt: event?.prompt })) return;
+      const ackId = alignmentAcks.replied(agentId, content);
+      if (ackId !== null) void call(agentId, "llm_output.alignment_ack", TURN_CONTEXT_TOOL, { ack_note_id: ackId });
       const isCron = /^agent:[^:]+:cron:/.test(sessionKey) || sessionKey.startsWith("cron:");
       const importance = isCron ? 0.1 : core.scoreImportance("assistant", content);
       appendEpisodeRemote(agentId, sessionKey, "assistant", content, importance);

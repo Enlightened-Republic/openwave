@@ -129,7 +129,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       ["brain_review", { node_id: a, quality: 3 }, /./],
       ["brain_edges", { node_id: a }, /./],
       ["brain_supersede", { old_node_id: b, new_content: "Hailey switched to cortados." }, /./],
-      ["brain_status", {}, /Brain status \(schema v20\)/],
+      ["brain_status", {}, /Brain status \(schema v21\)/],
       ["brain_set_goal", { title: "Plan Hailey's birthday dinner", priority: "high" }, /Goal set: \S+ P2 \[active\]/],
       ["brain_list_goals", {}, /birthday dinner/],
       ["brain_update_goal", { goal_id: "__GOAL__", action: "progress", note: "booked" }, /Goal progress/],

@@ -8,7 +8,7 @@ import { makeMockApi } from "./mock-api.js";
 const prependOf = (out: unknown[]) =>
   (out.find((r) => (r as { prependContext?: string })?.prependContext) as { prependContext?: string })?.prependContext ?? "";
 
-test("local: goals block carries the alignment note once and fires keyword triggers; flags turn it off", async () => {
+test("local: goals block carries the alignment note until a real reply (not a tool-only turn) and fires keyword triggers; flags turn it off", async () => {
   const agent = "contlocal";
   const mock = makeMockApi({ enabled: true, config: { agents: [agent] } });
   plugin.register(mock.api as never);
@@ -18,6 +18,15 @@ test("local: goals block carries the alignment note once and fires keyword trigg
   core.runDriftPass(agent, core.DEFAULT_CONFIG);
   const p1 = prependOf(await mock.fire("before_prompt_build", { prompt: "what's for lunch today?" }, ctx));
   expect(p1).toMatch(/\[BRAIN: goals\]\nAlignment: no progress on goal "Ship the billing migration" \(P1\) in 10 days/);
+  // that turn only called a memory tool → the note is NOT used up
+  await mock.fire("before_tool_call", { toolName: "tool_call", params: { id: "brain_status", args: {} } }, ctx);
+  await mock.fire("llm_output", { assistantTexts: ["TOOL brain_status RESULT: …"] }, ctx);
+  expect(core.computeBrainStatus(core.getDb(agent), core.DEFAULT_CONFIG).goals.pendingNote).toMatch(/no progress/);
+  const p1b = prependOf(await mock.fire("before_prompt_build", { prompt: "what's for lunch, really?" }, ctx));
+  expect(p1b).toMatch(/\[BRAIN: goals\]\nAlignment: no progress/);
+  // a real reply → delivered
+  await mock.fire("llm_output", { assistantTexts: ["Tacos from the place on 5th."] }, ctx);
+  expect(core.computeBrainStatus(core.getDb(agent), core.DEFAULT_CONFIG).goals.pendingNote).toBeNull();
   const p2 = prependOf(await mock.fire("before_prompt_build", { prompt: "what's for lunch tomorrow?" }, ctx));
   expect(p2).not.toContain("[BRAIN: goals]");
   const p3 = prependOf(await mock.fire("before_prompt_build", { prompt: "please send the invoice" }, ctx));

@@ -52,5 +52,7 @@ export const MANIFEST_CONFIG_DEFAULTS: Record<string, unknown> = {
   "intentDriftCheck": "sleep",
   "driftDays": 7,
   "goalTriggers": true,
-  "alignmentNoteMaxTokens": 60
+  "alignmentNoteMaxTokens": 60,
+  "decisionDraftTtlDays": 14,
+  "lessonMergeSimilarity": 0.86
 };

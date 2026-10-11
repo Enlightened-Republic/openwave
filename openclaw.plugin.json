@@ -372,6 +372,20 @@
         "minimum": 20,
         "maximum": 400,
         "description": "Token cap for the injected goals block (alignment note + trigger lines)."
+      },
+      "decisionDraftTtlDays": {
+        "type": "number",
+        "default": 14,
+        "minimum": 0,
+        "maximum": 365,
+        "description": "Auto-extracted decision drafts that stay unconfirmed, outcome-less and unlinked this many days are soft-retired by sleep (0 = never)."
+      },
+      "lessonMergeSimilarity": {
+        "type": "number",
+        "default": 0.86,
+        "minimum": 0.5,
+        "maximum": 0.99,
+        "description": "Embedding cosine at/above which a new lesson merges into an existing skill instead of creating one (lexical fallback without embeddings)."
       }
     }
   },

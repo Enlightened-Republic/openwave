@@ -7,11 +7,11 @@
 > service they always use your private brain). The agent's own "I'll go with X
 > over Y because …" becomes a low-confidence decision draft. Each turn may get
 > one small `[BRAIN: goals]` block: an alignment note after the drift pass
-> found a stalled or conflicting goal (delivered once), and goal lines whose
+> found a stalled or conflicting goal (acked after the first real reply; memory-tool-only turns do not use it up), and goal lines whose
 > keyword / time trigger fired. Matching decisions get a light recall boost.
 > Settings: `decisionLedger`, `decisionAutoExtract`, `decisionLessonPromotion`,
 > `decisionBoost`, `intentDriftCheck` (`sleep` | `daily` | `off`), `driftDays`,
-> `goalTriggers`, `alignmentNoteMaxTokens`. In remote mode the engine flags live
+> `goalTriggers`, `alignmentNoteMaxTokens`, `decisionDraftTtlDays`, `lessonMergeSimilarity`. In remote mode the engine flags live
 > in the service's config.json `brain` block; the plugin skips the goals call
 > when `intentDriftCheck` is `off` and `goalTriggers` is false. Needs
 > xanima-server 0.2.0 for the new tools (older services: the goals block is

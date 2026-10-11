@@ -35,7 +35,7 @@ describe.skipIf(!HAVE_SERVER)("xanima 0.2.0 remote continuity (real xanima-serve
     await svc?.stop();
   });
 
-  test("goals block: alignment note once after drift, then a keyword trigger", async () => {
+  test("goals block: alignment note until a real reply after drift, then a keyword trigger", async () => {
     const g = await call("brain_set_goal", { title: "Ship the billing migration", priority: "critical", keywords: ["billing"], triggers: [{ kind: "keyword", keywords: ["invoice"] }] });
     expect(g).toMatch(/P1 \[active\]/);
     const sup = await call("brain_update_goal", { goal_id: /Goal set: (\S+)/.exec(g)![1]!, action: "supersede", title: "Ship the billing migration by Nov 1", reason: "date agreed" });
@@ -47,6 +47,17 @@ describe.skipIf(!HAVE_SERVER)("xanima 0.2.0 remote continuity (real xanima-serve
     db.close();
     const p1 = await turn("what's for lunch?");
     expect(p1).toMatch(/^\[BRAIN: goals\]\nAlignment: no progress on goal "Ship the billing migration by Nov 1" \(P1\) in 9 days/);
+    // memory-tool-only turn: not consumed
+    await mock.fire("before_tool_call", { toolName: "tool_call", params: { id: "brain_status", args: {} } }, ctx);
+    await mock.fire("llm_output", { assistantTexts: ["TOOL brain_status RESULT: …"] }, ctx);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(await call("brain_status", {})).toMatch(/alignment note pending \(offered 1×/);
+    expect(await turn("what's for lunch, really?")).toMatch(/Alignment: no progress/);
+    // a real reply (after a non-memory tool) → acked on the service
+    await mock.fire("before_tool_call", { toolName: "web_search", params: { q: "tacos" } }, ctx);
+    await mock.fire("llm_output", { assistantTexts: ["Tacos from the place on 5th."] }, ctx);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(await call("brain_status", {})).not.toMatch(/alignment note pending/);
     expect(await turn("what's for dinner?")).not.toContain("[BRAIN: goals]");
     expect(await turn("send the invoice")).toMatch(/Goal P1 "Ship the billing migration by Nov 1" \(you mentioned "invoice"\)/);
     expect(await call("brain_status", {})).toMatch(/DRIFT .*billing migration/);
