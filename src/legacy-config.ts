@@ -12,6 +12,8 @@
 //     both register brain_* tools, and mirrors allow/deny lists. Rollback is
 //     re-enabling openwave and disabling xanima (or restoring the backup file).
 
+import { MANIFEST_CONFIG_DEFAULTS } from "./manifest-defaults.js";
+
 export const PLUGIN_ID = "xanima";
 export const LEGACY_PLUGIN_ID = "openwave";
 
@@ -29,7 +31,9 @@ const isObj = (v: unknown): v is Obj => !!v && typeof v === "object" && !Array.i
 /** Keys that are just host plumbing, not real plugin settings. */
 function hasSettings(raw: Obj): boolean {
   const inner = isObj(raw["config"]) ? (raw["config"] as Obj) : raw;
-  return Object.keys(inner).some((k) => k !== "enabled" && k !== "hooks");
+  return Object.entries(inner).some(([k, v]) =>
+    k !== "enabled" && k !== "hooks" &&
+    !(k in MANIFEST_CONFIG_DEFAULTS && JSON.stringify(v) === JSON.stringify(MANIFEST_CONFIG_DEFAULTS[k])));
 }
 
 export type PluginConfigSource = "xanima" | "openwave-legacy" | "default";
@@ -40,6 +44,9 @@ export type PluginConfigSource = "xanima" | "openwave-legacy" | "default";
  */
 export function resolvePluginConfig(raw: Obj | undefined, ocConfig: unknown, warn: (m: string) => void): { raw: Obj; source: PluginConfigSource } {
   const mine = raw ?? {};
+  // OpenClaw fills api.pluginConfig with the manifest's schema defaults, so it
+  // is never "empty"; judge what the user actually set from the raw config file.
+  // Values equal to the manifest defaults therefore do not count as settings.
   if (hasSettings(mine)) {
     const legacy = legacyEntry(ocConfig);
     if (legacy && legacy.enabled !== false) {
@@ -56,12 +63,16 @@ export function resolvePluginConfig(raw: Obj | undefined, ocConfig: unknown, war
 }
 
 function legacyEntry(ocConfig: unknown): Obj | null {
+  return entryFor(ocConfig, LEGACY_PLUGIN_ID);
+}
+
+function entryFor(ocConfig: unknown, id: string): Obj | null {
   if (!isObj(ocConfig)) return null;
   const plugins = ocConfig["plugins"];
   if (!isObj(plugins)) return null;
   const entries = plugins["entries"];
   if (!isObj(entries)) return null;
-  const e = entries[LEGACY_PLUGIN_ID];
+  const e = entries[id];
   return isObj(e) ? e : null;
 }
 

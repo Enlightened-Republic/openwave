@@ -629,9 +629,14 @@ export default definePluginEntry({
     // 0.1.x: an empty xanima entry falls back to the old plugins.entries.openwave block.
     const resolvedRaw = resolvePluginConfig(
       (api.pluginConfig as Record<string, unknown>) ?? {},
-      (() => { try { return api.runtime?.config?.current?.(); } catch { return undefined; } })(),
+      (() => {
+        let live: unknown;
+        try { live = api.runtime?.config?.current?.(); } catch { live = undefined; }
+        return live ?? (api as unknown as { config?: unknown }).config;
+      })(),
       (m) => (api.logger?.warn ?? (() => {}))(m),
     );
+    (api.logger?.info ?? (() => {}))(`[xanima] {"op":"config.source","outcome":"${resolvedRaw.source}"}`);
     const rawPluginConfig = resolvedRaw.raw;
     const brainSettings = (rawPluginConfig.config as Partial<OpenwaveConfig>) ?? (rawPluginConfig as Partial<OpenwaveConfig>);
     const config: OpenwaveConfig = {

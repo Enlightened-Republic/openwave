@@ -1,0 +1,48 @@
+// Config defaults from openclaw.plugin.json (configSchema.properties.*.default).
+// OpenClaw pre-fills api.pluginConfig with these, so they are not "user settings".
+// Kept in sync by test/xanima-compat.test.ts.
+export const MANIFEST_CONFIG_DEFAULTS: Record<string, unknown> = {
+  "agents": [
+    "main"
+  ],
+  "contextBudget": 2000,
+  "workingMemorySlots": 7,
+  "spreadingActivationHops": 1,
+  "activationThreshold": 0.1,
+  "inhibitionStrength": 0.6,
+  "recallTopK": 10,
+  "bootstrapTopK": 15,
+  "efDefault": 2.5,
+  "retrievabilityFloor": 0.05,
+  "consolidationTimeGateHours": 4,
+  "consolidationEpisodeGate": 10,
+  "pruneAfterDays": 90,
+  "ingestionModel": "openrouter/deepseek/deepseek-v4-flash",
+  "openRouterApiKey": "",
+  "embeddingModel": "ollama/qwen3-embedding:0.6b",
+  "llmExtractionEnabled": false,
+  "llmExtractionMinImportance": 0.4,
+  "skipSystemTurns": true,
+  "systemTurnPatterns": [],
+  "skillEvolution": false,
+  "skillEvolveMinPatternCount": 5,
+  "workspaceSkillsDir": "",
+  "brainDocsDir": "",
+  "curatedTierDedupe": true,
+  "consolidationCron": "30 4 * * *",
+  "consolidationCronEnabled": true,
+  "personaOverrides": {},
+  "brainMode": "local",
+  "brainUrl": "http://127.0.0.1:18790",
+  "sharedRecall": true,
+  "remoteTimeoutMs": 2500,
+  "autoAgents": false,
+  "excludeAgents": [],
+  "autoProvision": false,
+  "rosterPollMs": 30000,
+  "beliefMetadata": true,
+  "relativeTimeLabels": true,
+  "selfStatus": true,
+  "lowConfidenceThreshold": 0.4,
+  "sleepBeliefReview": true
+};

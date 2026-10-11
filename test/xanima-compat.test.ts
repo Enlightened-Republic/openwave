@@ -34,6 +34,23 @@ const OPENWAVE_020 = {
 };
 
 describe("resolvePluginConfig", () => {
+  test("MANIFEST_CONFIG_DEFAULTS matches openclaw.plugin.json", async () => {
+    const { readFileSync } = await import("node:fs");
+    const m = JSON.parse(readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"));
+    const want = Object.fromEntries(Object.entries(m.configSchema.properties as Record<string, { default?: unknown }>).filter(([, v]) => "default" in v).map(([k, v]) => [k, v.default]));
+    const { MANIFEST_CONFIG_DEFAULTS } = await import("../src/manifest-defaults.js");
+    expect(MANIFEST_CONFIG_DEFAULTS).toEqual(want);
+  });
+  test("host-filled schema defaults in pluginConfig do not hide the legacy openwave block (sandbox finding)", () => {
+    const warns: string[] = [];
+    const oc = { plugins: { entries: { xanima: { enabled: true, hooks: { allowConversationAccess: true }, config: { contextBudget: 2000, brainMode: "local" } }, openwave: { enabled: false, config: { brainMode: "remote", agents: "*" } } } } };
+    const r = resolvePluginConfig({ contextBudget: 2000, beliefMetadata: true, brainMode: "local", agents: ["main"] }, oc, (m) => warns.push(m));
+    expect(r.source).toBe("openwave-legacy");
+    expect((r.raw["config"] as Record<string, unknown>)["brainMode"]).toBe("remote");
+    expect(warns.join()).toMatch(/plugins\.entries\.openwave/);
+    const own = resolvePluginConfig({ contextBudget: 2000, recallTopK: 4 }, { plugins: { entries: { xanima: { config: { recallTopK: 4 } }, openwave: { enabled: false, config: { brainMode: "remote" } } } } }, () => {});
+    expect(own.source).toBe("xanima");
+  });
   test("xanima entry wins; empty xanima entry falls back to openwave with one warning", () => {
     const warns: string[] = [];
     const mine = resolvePluginConfig({ enabled: true, config: { agents: ["a"] } }, { plugins: { entries: { openwave: { enabled: false, config: { agents: ["b"] } } } } }, (m) => warns.push(m));

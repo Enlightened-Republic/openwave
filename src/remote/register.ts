@@ -77,7 +77,7 @@ export const REMOTE_TOOL_NAMES = [
 export const RECALL_BLOCK_HEADER =
   "[BRAIN: on your mind — ·gist items are rough unattributed fragments; do not assert them as facts about Hailey without checking]";
 export const REMOTE_BANNER =
-  "[Xanima remote] Memory is served by the Xanima brain service; relevant memories (your private brain + shared) are pre-loaded below, each with when it was learned and a (?) when confidence is low. Use brain_query for deep recall (as_of for what you believed at a past time), brain_write to record new facts, brain_retract / brain_supersede (with a reason) to correct wrong ones, brain_status for a short memory self-check.";
+  "[Xanima remote] Memories from the Xanima brain service (private + shared) are pre-loaded below with their age; (?) = low confidence. Tools: brain_query (as_of = what you believed then), brain_write, brain_retract / brain_supersede (give a reason), brain_status.";
 export const REMOTE_DOWN_NOTICE =
   "[Xanima remote] Brain service unavailable this turn — no memories were loaded; brain_* tools may fail until it recovers.";
 /** How long a remote brain_status result is reused for the injection footer. */
