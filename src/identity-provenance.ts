@@ -1,7 +1,7 @@
 // Identity provenance + workspace mirror for brain_identity (Xanima 0.5.0 follow-up).
 //
 // Identity changes only from the agent's own reflection and its conversations with its owner, never from
-// outside content (Hailey, Oct 18). The brain service applies the first kind at once and REFUSES the second
+// outside content. The brain service applies the first kind at once and REFUSES the second
 // (steering the agent to brain_write knowledge / skills). The model can't be trusted to say which it was, so
 // the plugin — which sees the turn — attests it: every brain_identity call gets `attested_provenance` set
 // here (any model-supplied value is overwritten).

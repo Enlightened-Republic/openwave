@@ -63,7 +63,7 @@ export function assemblyOptsFor(
 
 /**
  * Graft B: idempotently register host cron openwave:consolidation.
- * VERIFIED: matches in-repo CronService.add shape. NEEDS HAILEY SMOKE: that a
+ * VERIFIED: matches in-repo CronService.add shape. NEEDS LIVE SMOKE: that a
  * fired job surfaces on cron_changed so runConsolidationPass runs in-process.
  * Still registers when dreaming is disabled (Telegram-temp).
  */
