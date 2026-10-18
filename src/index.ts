@@ -49,6 +49,7 @@ import { registerRemoteMode, type RemoteRuntime } from "./remote/register.js";
 import { AgentRoster, isDynamicAgents, type AutoAgentsConfig, type AgentsSpec } from "./remote/agents.js";
 import { BRAIN_TOOL_OUTPUT_SCHEMA, brainToolResult } from "./tool-result.js";
 import type { BrainConnectionInfo } from "./settings-contract.js";
+import { AlignmentAckTracker } from "./alignment-ack.js";
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 //
@@ -742,6 +743,7 @@ export default definePluginEntry({
     // hourly / session_end harvest nor in-process SWS can mint nodes from them.
     const noise = resolveSystemNoiseSettings(config);
     const noisePairs = new NoisePairTracker();
+    const alignmentAcks = new AlignmentAckTracker();
     if (noise.invalidPatterns.length) log.warn(logFields({ op: "system_noise.patterns", outcome: "invalid", count: noise.invalidPatterns.length }));
     const skipTurn = (agentId: string, op: string, t: Parameters<typeof classifySystemTurn>[0]): boolean => {
       const v = classifySystemTurn(t, noise);
@@ -1252,6 +1254,17 @@ export default definePluginEntry({
         // non-fatal — recall continues without pre-priming
       }
 
+      // Xanima 0.2.0: alignment note (once, after a drift pass) + goal triggers, budget-capped.
+      if (surface !== "voice") {
+        try {
+          const g = core.buildGoalTurnContext(agentId, lastUserMsg ?? "", config, Date.now(), log);
+          if (g.text) parts.push(g.text);
+          alignmentAcks.offer(agentId, g.noteId); // delivered only after a real reply (llm_output)
+        } catch (err) {
+          log.debug?.(logFields({ agentId, sessionId, op: "before_prompt_build.goals", outcome: "error", error: String(err) }));
+        }
+      }
+
       const recalledIds = new Set<string>();
       try {
         const recallBlock = await core.buildRecallContext(agentId, lastUserMsg, hookCtx?.sessionKey ?? sessionId, config, surface, recalledIds);
@@ -1423,6 +1436,15 @@ export default definePluginEntry({
       }
     });
 
+    // before_tool_call (observe only): which tools ran in the turn that carried the alignment note
+    api.on("before_tool_call", (event: { toolName?: string; params?: Record<string, unknown> }, hookCtx: { agentId?: string; sessionKey?: string }) => {
+      try {
+        const agentId = resolveAgentId(undefined, hookCtx, config.agents);
+        alignmentAcks.toolCall(agentId, event?.toolName, event?.params);
+      } catch { /* observe only */ }
+      return undefined;
+    });
+
     // llm_output
     api.on("llm_output", async (event: { assistantTexts?: string[]; content?: string; prompt?: string }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string; trigger?: string; inputProvenance?: InputProvenanceLike }) => {
       const agentId = resolveAgentId(undefined, hookCtx, config.agents);
@@ -1443,6 +1465,14 @@ export default definePluginEntry({
         return;
       }
       if (skipTurn(agentId, "llm_output", { role: "assistant", content, sessionKey, trigger: hookCtx?.trigger, inputProvenance: hookCtx?.inputProvenance, prompt: event?.prompt })) return;
+      // Xanima 0.2.0: a real reply came out of the prompt that carried the alignment note → delivered.
+      {
+        const ackId = alignmentAcks.replied(agentId, content);
+        if (ackId !== null) {
+          try { core.ackAlignmentNote(agentId, ackId); log.debug?.(logFields({ agentId, op: "llm_output.alignment_ack", outcome: "ok", noteId: ackId })); }
+          catch (err) { log.debug?.(logFields({ agentId, op: "llm_output.alignment_ack", outcome: "error", error: String(err) })); }
+        }
+      }
       // Cron sessions are operational overhead — clamp importance below the
       // extraction threshold so responses like "Awakened via cron — Morning
       // Routine" never become extracted brain nodes. Episode still written for
@@ -1471,6 +1501,16 @@ export default definePluginEntry({
         return;
       }
       log.info(logFields({ agentId, sessionId, op: "llm_output", outcome: "ok", importance, isCronSession }));
+
+      // Xanima 0.2.0: heuristic decision drafts from the agent's own words.
+      if (!isCronSession) {
+        try {
+          const drafted = core.autoExtractDecisions(agentId, content, config, { evidence: [episodeId] });
+          if (drafted.length) log.info(logFields({ agentId, sessionId, op: "llm_output.decision_draft", outcome: "ok", count: drafted.length }));
+        } catch (err) {
+          log.debug?.(logFields({ agentId, sessionId, op: "llm_output.decision_draft", outcome: "error", error: String(err) }));
+        }
+      }
 
       if (config.llmExtractionEnabled && importance >= config.llmExtractionMinImportance) {
         core.queueEpisodeForExtraction(agentId, {

@@ -51,8 +51,9 @@ export type RunningServer = {
 /** Optional second build (e.g. sharpwave main without brain_episode_append) to exercise the fallback path. */
 export const LEGACY_SERVER_CLI = process.env["SHARPWAVE_SERVER_CLI_LEGACY"] ? resolve(process.env["SHARPWAVE_SERVER_CLI_LEGACY"]) : null;
 
-export async function startServer(cli: string = SERVER_CLI): Promise<RunningServer> {
+export async function startServer(cli: string = SERVER_CLI, serviceConfig?: Record<string, unknown>): Promise<RunningServer> {
   const root = mkdtempSync(join(tmpdir(), "ow-remote-svc-"));
+  if (serviceConfig) writeFileSync(join(root, "config.json"), JSON.stringify(serviceConfig));
   const tokenDir = mkdtempSync(join(tmpdir(), "ow-remote-tok-"));
   const port = await freePort();
   const env = { ...process.env, OLLAMA_BASE_URL: "http://127.0.0.1:59999", XANIMA_DATA_DIR: join(root, "unused-core-data") };

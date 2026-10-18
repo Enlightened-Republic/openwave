@@ -44,5 +44,15 @@ export const MANIFEST_CONFIG_DEFAULTS: Record<string, unknown> = {
   "relativeTimeLabels": true,
   "selfStatus": true,
   "lowConfidenceThreshold": 0.4,
-  "sleepBeliefReview": true
+  "sleepBeliefReview": true,
+  "decisionLedger": true,
+  "decisionAutoExtract": true,
+  "decisionLessonPromotion": false,
+  "decisionBoost": 1.2,
+  "intentDriftCheck": "sleep",
+  "driftDays": 7,
+  "goalTriggers": true,
+  "alignmentNoteMaxTokens": 60,
+  "decisionDraftTtlDays": 14,
+  "lessonMergeSimilarity": 0.86
 };

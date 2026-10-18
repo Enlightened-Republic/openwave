@@ -1,5 +1,22 @@
 # Xanima for OpenClaw (`xanima-openclaw`, formerly openwave)
 
+> **0.2.0 (pre-release, not published): decision ledger + goals / drift.**
+> Tools `brain_record_decision`, `brain_update_decision_outcome`,
+> `brain_query_decisions`, `brain_set_goal`, `brain_update_goal` (versions and
+> history kept), `brain_list_goals` — local and remote (proxied; on the
+> service they always use your private brain). The agent's own "I'll go with X
+> over Y because …" becomes a low-confidence decision draft. Each turn may get
+> one small `[BRAIN: goals]` block: an alignment note after the drift pass
+> found a stalled or conflicting goal (acked after the first real reply; memory-tool-only turns do not use it up), and goal lines whose
+> keyword / time trigger fired. Matching decisions get a light recall boost.
+> Settings: `decisionLedger`, `decisionAutoExtract`, `decisionLessonPromotion`,
+> `decisionBoost`, `intentDriftCheck` (`sleep` | `daily` | `off`), `driftDays`,
+> `goalTriggers`, `alignmentNoteMaxTokens`, `decisionDraftTtlDays`, `lessonMergeSimilarity`. In remote mode the engine flags live
+> in the service's config.json `brain` block; the plugin skips the goals call
+> when `intentDriftCheck` is `off` and `goalTriggers` is false. Needs
+> xanima-server 0.2.0 for the new tools (older services: the goals block is
+> skipped silently).
+>
 > **0.1.0 (pre-release, not published):** openwave is now **Xanima**. Package
 > `xanima-openclaw`, plugin id `xanima` (manifest `legacyPluginIds: ["openwave"]`),
 > engine `xanima-core`. The `brain_*` tool names are unchanged and permanent.

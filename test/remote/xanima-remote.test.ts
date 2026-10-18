@@ -66,6 +66,6 @@ describe.skipIf(!HAVE_SERVER)("xanima remote mode (real xanima-server)", () => {
     const st = await turn("tell me about zebras");
     expect(st.appendSystemContext).toMatch(/\[BRAIN: status\] \d+ low-confidence items — call brain_status for details\./);
     tools = new Map(mock.rec.tools.map((f: (c: unknown) => Tool) => f(ctx)).map((t: Tool) => [t.name, t]));
-    expect(await call("brain_status", {})).toMatch(/\[private\] Brain status \(schema v19\)/);
+    expect(await call("brain_status", {})).toMatch(/\[private\] Brain status \(schema v21\)/);
   });
 });
