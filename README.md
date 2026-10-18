@@ -392,24 +392,25 @@ value writes are held; `enforce` holds them all in `brain_review`), `injectionCa
 service's own settings apply. See sharpwave `docs/rooms.md` and
 `docs/security-model.md`.
 
-**Agents evolve their own identity (`brain_identity`, 0.5.0 follow-up).** The agent
-can add, change or remove a line of its identity header (`- **Field:** value`) or a
-core value, with a short reason: `brain_identity {action: "change", target: "field",
-field: "Vibe", value: "…", reason: "…"}` (`get` / `history` to read). A change from
-the agent's own turn applies at once and is versioned; the operator sees it in
-`brain_status` and `xanima-server identity history --agent X`, and can undo one with
-`xanima-server identity revert <version>`. The plugin attests where each change came
-from: if any non-memory tool (web, read, exec, …) returned output in the same run, the
-run started from a non-owner sender (with `commands.ownerAllowFrom` set), or the new
-text repeats recent tool output, the change waits in `brain_review` instead. Whatever
-the model claims about provenance is ignored. It is permissive by default and
-each guardrail is one switch under `identity`: `selfEdit` (true), `holdUntrusted` (true),
-`locked` (`["Name"]`), `maxChangesPerDay` (0 = no limit), `maxChars` (2000, 0 = no cap),
-`requireAttestation` (false).
-Settings: `identityMirror` (false; when true, applied changes are written back to the
-workspace `IDENTITY.md` field lines and a managed "Evolved values" block in
-`SOUL.md`), `identityTrustedTools` ([]; tools whose output doesn't count as outside
-content), `identity` (local mode guardrails; in remote mode set them on the service).
+**Agents evolve their own identity (`brain_identity`).** The agent can add, change or
+remove a line of its identity header (`- **Field:** value`) or a core value, with a short
+reason: `brain_identity {action: "change", target: "field", field: "Vibe", value: "…",
+reason: "…"}` (`get` / `history` to read). Identity changes only from the agent's own
+reflection and its conversations with its owner. Such a change applies at once, is
+versioned and shows in the header from the next turn. The operator sees it in
+`brain_status` and `xanima-server identity history --agent X`, and can undo it with
+`identity revert <version>`. In a run where a non-memory tool (web, read, exec, …) returned
+output, the run came from a non-owner sender (with `commands.ownerAllowFrom` set), or the
+new text repeats recent tool output, the change is **refused**, with a pointer to save what
+was learned with `brain_write` as knowledge or a skill. There is no review queue. The
+proposal is kept as a candidate knowledge note tagged `source:web`, quarantine-checked.
+Whatever the model claims about provenance is ignored. Switches under `identity`:
+`selfEdit` (true), `refuseUntrusted` (true), `saveRefusedAsNote` (true), `locked`
+(`["Name"]`), `maxChangesPerDay` (0 = no limit), `maxChars` (2000),
+`requireAttestation` (false). Plugin settings: `identityMirror` (false; when true,
+applied changes are written back to the workspace `IDENTITY.md` field lines and a managed
+"Evolved values" block in `SOUL.md`) and `identityTrustedTools` ([]; tools whose output
+doesn't count as outside content).
 
 ---
 

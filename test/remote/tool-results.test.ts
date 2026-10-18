@@ -7,6 +7,7 @@
 // catalog value path hands the model ONLY `details` (see ../openclaw-projection.ts).
 // These tests assert what the model actually receives on BOTH paths, for every
 // proxied tool, and that openwave's published input schemas match the service's.
+import { IDENTITY_STEERING_NOTE } from "xanima-core";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { Value } from "typebox/value";
@@ -213,7 +214,8 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
     const [res] = await mock.fire("before_prompt_build", { prompt: "What do you remember about Hailey?" }, { agentId: AGENT, sessionKey: `agent:${AGENT}:main`, sessionId: "s-main" });
     const block = (res as { prependContext?: string } | undefined)?.prependContext ?? "";
     // the brain_identity add in the all-tools test shows in the always-on identity header from the next turn
-    expect(block.startsWith("[BRAIN: identity] - **Vibe:** steady\n\n" + RECALL_BLOCK_HEADER)).toBe(true);
+    // ...with the steering note: identity changes only by the agent's own reflection; learning → brain_write
+    expect(block.startsWith(`[BRAIN: identity] - **Vibe:** steady ${IDENTITY_STEERING_NOTE}\n\n` + RECALL_BLOCK_HEADER)).toBe(true);
     expect(block).toContain("Hailey birthday: Hailey's birthday is March 3rd.");
     // brain_supersede (in the all-tools test above) replaced the coffee fact:
     // only the current version is injected (the old one is history, reachable

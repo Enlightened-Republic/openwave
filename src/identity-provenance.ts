@@ -1,25 +1,31 @@
 // Identity provenance + workspace mirror for brain_identity (Xanima 0.5.0 follow-up).
 //
-// The brain service applies an agent's own identity change at once but HOLDS one that was
-// prompted by tool / web output or an untrusted sender. The model can't be trusted to say which
-// it was, so the plugin — which sees the turn — attests it: every brain_identity call gets
-// `attested_provenance` set here (any model-supplied value is overwritten).
+// Identity changes only from the agent's own reflection and its conversations with its owner, never from
+// outside content (Hailey, Oct 18). The brain service applies the first kind at once and REFUSES the second
+// (steering the agent to brain_write knowledge / skills). The model can't be trusted to say which it was, so
+// the plugin — which sees the turn — attests it: every brain_identity call gets `attested_provenance` set
+// here (any model-supplied value is overwritten).
 //
-//   agent_turn        nothing untrusted reached the model in this run
-//   tool_output       a non-memory tool (web_fetch, read, exec, …) returned output in this run
-//   untrusted_sender  the run started from a non-owner message (only when commands.ownerAllowFrom is set)
-//   tool_output_echo  the proposed text repeats recent tool output from this session (earlier runs)
+//   owner_turn        the run started from an owner message (commands.ownerAllowFrom)          → applies
+//   reflection        a cron / heartbeat (self-reflection) run with no outside input            → applies
+//   agent_turn        clean own turn, sender not classifiable (no owner list: single-user box) → applies
+//   tool_output       a non-memory tool (web_fetch, read, exec, …) returned output in this run   → refused
+//   untrusted_sender  the run started from a non-owner message (only when ownerAllowFrom is set) → refused
+//   tool_output_echo  the proposed text repeats recent tool output from this session            → refused
 //
 // A run = from an inbound message (or the first hook of a session) to agent_end.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { isCronSessionKey } from "./provenance.js";
+import { isHeartbeatSessionKey } from "./system-noise.js";
 
 export const IDENTITY_TOOL = "brain_identity";
 /** Catalog / plumbing tools whose output is not outside content. */
 const BENIGN_TOOLS = new Set(["tool_search", "tool_describe", "sessions_yield"]);
 const ECHO_BUFFER_CHARS = 32_000;
 
-export type IdentityOrigin = "agent_turn" | "tool_output" | "untrusted_sender" | "tool_output_echo";
+export type IdentityOrigin = "owner_turn" | "reflection" | "agent_turn" | "tool_output" | "untrusted_sender" | "tool_output_echo";
+export type RunSender = "owner" | "untrusted" | "unknown";
 export interface Attestation { origin: IdentityOrigin; tools?: string[]; via: "openclaw" }
 
 const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
@@ -38,7 +44,7 @@ export function effectiveToolName(toolName: string | undefined, params: Record<s
 
 export class IdentityProvenanceTracker {
   private runTools = new Map<string, Set<string>>();
-  private runSender = new Map<string, boolean>();
+  private runSender = new Map<string, RunSender>();
   private echo = new Map<string, string>();
   constructor(private isMemoryTool: (name: string) => boolean, private trusted: readonly string[] = []) {}
   configure(isMemoryTool: (name: string) => boolean, trusted: readonly string[] = []): this {
@@ -56,11 +62,11 @@ export class IdentityProvenanceTracker {
     const text = norm(resultText(result)).slice(0, 8000);
     if (text) this.echo.set(session, `${this.echo.get(session) ?? ""} ${text}`.slice(-ECHO_BUFFER_CHARS));
   }
-  /** message_received: a new run starts; remember whether its sender is untrusted. */
-  newRun(session: string, untrustedSender: boolean): void {
+  /** message_received: a new run starts; remember who sent it (owner / untrusted / not classifiable). */
+  newRun(session: string, sender: RunSender | boolean): void {
     if (!session) return;
     this.runTools.delete(session);
-    this.runSender.set(session, untrustedSender);
+    this.runSender.set(session, sender === true ? "untrusted" : sender === false ? "unknown" : sender);
   }
   endRun(session: string): void {
     if (!session) return;
@@ -71,8 +77,11 @@ export class IdentityProvenanceTracker {
   attest(session: string, proposedText: string | string[]): Attestation {
     const tools = [...(this.runTools.get(session) ?? [])];
     if (tools.length) return { origin: "tool_output", tools, via: "openclaw" };
-    if (this.runSender.get(session)) return { origin: "untrusted_sender", via: "openclaw" };
+    const sender = this.runSender.get(session);
+    if (sender === "untrusted") return { origin: "untrusted_sender", via: "openclaw" };
     if ((Array.isArray(proposedText) ? proposedText : [proposedText]).some((t) => this.echoes(session, t))) return { origin: "tool_output_echo", via: "openclaw" };
+    if (sender === "owner") return { origin: "owner_turn", via: "openclaw" };
+    if (isCronSessionKey(session) || isHeartbeatSessionKey(session)) return { origin: "reflection", via: "openclaw" };
     return { origin: "agent_turn", via: "openclaw" };
   }
   private echoes(session: string, text: string): boolean {

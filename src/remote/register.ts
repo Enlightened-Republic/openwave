@@ -35,6 +35,7 @@ import type { BrainConnectionInfo } from "../settings-contract.js";
 import { AgentRoster, Provisioner, isDynamicAgents, type AgentsSpec, type AutoAgentsConfig } from "./agents.js";
 import { NoisePairTracker, classifySystemTurn, isHeartbeatSessionKey, resolveSystemNoiseSettings, type InputProvenanceLike, type TurnSignals } from "../system-noise.js";
 import { AlignmentAckTracker } from "../alignment-ack.js";
+import { IDENTITY_STEERING_NOTE } from "xanima-core";
 import { IDENTITY_TOOL, sharedIdentityTracker, attestIdentityArgs, effectiveToolName, mirrorIdentityToWorkspace, removedFieldOf } from "../identity-provenance.js";
 
 /** Local-only features that are switched off in remote mode (listed in the PR / README). */
@@ -862,7 +863,7 @@ export function registerRemoteMode(
             const sh = String(explicit ?? "identity");
             if (sh !== "off" && (explicit !== undefined || !helpers.contextOptsFor(agentId).externalMemoryActive)) {
               const lines: string[] = [];
-              if (parsed.identity) lines.push(`[BRAIN: identity] ${String(parsed.identity).replace(/\s+/g, " ").slice(0, 400)}`);
+              if (parsed.identity) lines.push(`[BRAIN: identity] ${String(parsed.identity).replace(/\s+/g, " ").slice(0, 2000)} ${IDENTITY_STEERING_NOTE}`);
               if (sh === "identity+goals" && Array.isArray(parsed.activeGoals) && parsed.activeGoals.length) lines.push(`[BRAIN: active goals] ${parsed.activeGoals.map((t) => String(t).slice(0, 80)).join(" · ")}`);
               if (lines.length) goalsBlock = goalsBlock ? `${lines.join("\n")}\n\n${goalsBlock}` : lines.join("\n");
             }
@@ -908,7 +909,7 @@ export function registerRemoteMode(
       const isCron = /^agent:[^:]+:cron:/.test(sessionKey) || sessionKey.startsWith("cron:");
       const owners = readOwnerAllowFrom(api.runtime?.config?.current?.());
       const origin = classifyOrigin({ channelId: hookCtx?.channelId, senderId: event?.senderId, from: event?.from, sessionKey }, owners);
-      identityProv.newRun(provKey({ sessionKey, sessionId: hookCtx?.sessionId }), owners.length > 0 && origin === "untrusted");
+      identityProv.newRun(provKey({ sessionKey, sessionId: hookCtx?.sessionId }), owners.length === 0 ? "unknown" : origin === "owner" ? "owner" : origin === "untrusted" ? "untrusted" : "unknown");
       const scored = isCron ? 0.1 : core.scoreImportance("user", content);
       const importance = owners.length === 0 ? scored : capImportance(origin, scored, config.llmExtractionMinImportance);
       appendEpisodeRemote(agentId, sessionKey, "user", content, importance);

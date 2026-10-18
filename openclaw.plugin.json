@@ -485,15 +485,19 @@
       "identity": {
         "type": "object",
         "additionalProperties": false,
-        "description": "brain_identity: agents change their own identity and values (applied at once, versioned, revertible). Permissive by default; each guardrail is one switch. Local mode; on remote mode set them in the brain service config.",
+        "description": "brain_identity: agents change their own identity and values only from their own reflection and conversations with their owner (applied at once, versioned, revertible); changes in runs that read outside content are refused. Each guardrail is one switch. Local mode; on remote mode set them in the brain service config.",
         "properties": {
           "selfEdit": {
             "type": "boolean",
             "description": "Agents may change their own identity (default true; false = read-only)."
           },
-          "holdUntrusted": {
+          "refuseUntrusted": {
             "type": "boolean",
-            "description": "Hold identity changes that come from tool / web / injected content for review (default true)."
+            "description": "Refuse identity changes in runs that read tool / web / outside content; the agent is pointed to brain_write knowledge / skills instead (default true). No review queue."
+          },
+          "saveRefusedAsNote": {
+            "type": "boolean",
+            "description": "Keep a refused proposal as a candidate knowledge note, quarantine-checked (default true)."
           },
           "locked": {
             "type": "array",
@@ -514,7 +518,7 @@
           },
           "requireAttestation": {
             "type": "boolean",
-            "description": "Hold identity changes that arrive without host attestation, e.g. bare MCP clients (default false)."
+            "description": "Refuse identity changes that arrive without host attestation, e.g. bare MCP clients (default false)."
           }
         }
       },
@@ -529,7 +533,7 @@
           "type": "string"
         },
         "default": [],
-        "description": "Tools whose output does NOT mark a turn as tool-influenced for brain_identity (default none: any non-memory tool output means an identity change in that run waits for review)."
+        "description": "Tools whose output does NOT mark a turn as tool-influenced for brain_identity (default none: any non-memory tool output means an identity change in that run is refused)."
       },
       "injectionCategories": {
         "type": "object",

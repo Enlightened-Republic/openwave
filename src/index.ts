@@ -1440,7 +1440,7 @@ export default definePluginEntry({
         { channelId: hookCtx?.channelId, senderId: event?.senderId, from: event?.from, sessionKey },
         ownerAllowFrom,
       );
-      identityProv.newRun(provKey({ sessionKey, sessionId: hookCtx?.sessionId }), ownerAllowFrom.length > 0 && origin === "untrusted");
+      identityProv.newRun(provKey({ sessionKey, sessionId: hookCtx?.sessionId }), ownerAllowFrom.length === 0 ? "unknown" : origin === "owner" ? "owner" : origin === "untrusted" ? "untrusted" : "unknown");
       if (ownerAllowFrom.length === 0 && !warnedNoOwnerList) {
         warnedNoOwnerList = true;
         log.warn(logFields({ op: "provenance_gate", outcome: "inactive", note: "commands.ownerAllowFrom is empty; inbound importance is not capped by sender" }));
