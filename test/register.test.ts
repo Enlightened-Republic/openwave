@@ -15,6 +15,6 @@ test("register wires the expected hooks and 16 tools", () => {
     expect(rec.hooks.has(h), `hook not registered: ${h}`).toBe(true);
   }
 
-  expect(rec.tools).toHaveLength(16);
+  expect(rec.tools).toHaveLength(18);
   expect(rec.lifecycles).toHaveLength(1);
 });
