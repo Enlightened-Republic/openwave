@@ -485,42 +485,36 @@
       "identity": {
         "type": "object",
         "additionalProperties": false,
-        "description": "brain_identity guardrails (agents add to / change their own identity and values). Local mode; on remote mode set them in the brain service config.",
+        "description": "brain_identity: agents change their own identity and values (applied at once, versioned, revertible). Permissive by default; each guardrail is one switch. Local mode; on remote mode set them in the brain service config.",
         "properties": {
+          "selfEdit": {
+            "type": "boolean",
+            "description": "Agents may change their own identity (default true; false = read-only)."
+          },
+          "holdUntrusted": {
+            "type": "boolean",
+            "description": "Hold identity changes that come from tool / web / injected content for review (default true)."
+          },
           "locked": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Identity fields the agent can't change (default [\"Name\"])."
+            "description": "Identity fields the agent can't change (default [\"Name\"]; [] = none)."
           },
           "maxChangesPerDay": {
             "type": "number",
             "minimum": 0,
-            "description": "Applied agent changes per rolling 24 h (default 5)."
+            "description": "Applied agent changes per rolling 24 h (default 0 = no limit)."
           },
-          "maxFieldNameChars": {
+          "maxChars": {
             "type": "number",
-            "minimum": 1
-          },
-          "maxFieldChars": {
-            "type": "number",
-            "minimum": 1,
-            "description": "Max chars of one field value (default 300)."
-          },
-          "maxValueChars": {
-            "type": "number",
-            "minimum": 1,
-            "description": "Max chars of one core value (default 600)."
-          },
-          "maxIdentityChars": {
-            "type": "number",
-            "minimum": 100,
-            "description": "Max chars of the whole identity header (default 1000)."
+            "minimum": 0,
+            "description": "Cap on the identity header and on one value's text (default 2000; 0 = no cap)."
           },
           "requireAttestation": {
             "type": "boolean",
-            "description": "Hold identity changes that arrive without host attestation (e.g. bare MCP clients). Default false."
+            "description": "Hold identity changes that arrive without host attestation, e.g. bare MCP clients (default false)."
           }
         }
       },

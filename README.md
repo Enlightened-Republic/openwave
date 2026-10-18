@@ -402,8 +402,10 @@ the agent's own turn applies at once and is versioned; the operator sees it in
 from: if any non-memory tool (web, read, exec, …) returned output in the same run, the
 run started from a non-owner sender (with `commands.ownerAllowFrom` set), or the new
 text repeats recent tool output, the change waits in `brain_review` instead. Whatever
-the model claims about provenance is ignored. Locked fields (`identity.locked`,
-default `["Name"]`), a daily cap (`identity.maxChangesPerDay`, 5) and size caps apply.
+the model claims about provenance is ignored. It is permissive by default and
+each guardrail is one switch under `identity`: `selfEdit` (true), `holdUntrusted` (true),
+`locked` (`["Name"]`), `maxChangesPerDay` (0 = no limit), `maxChars` (2000, 0 = no cap),
+`requireAttestation` (false).
 Settings: `identityMirror` (false; when true, applied changes are written back to the
 workspace `IDENTITY.md` field lines and a managed "Evolved values" block in
 `SOUL.md`), `identityTrustedTools` ([]; tools whose output doesn't count as outside
