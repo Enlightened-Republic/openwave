@@ -35,7 +35,7 @@ import type { BrainConnectionInfo } from "../settings-contract.js";
 import { AgentRoster, Provisioner, isDynamicAgents, type AgentsSpec, type AutoAgentsConfig } from "./agents.js";
 import { NoisePairTracker, classifySystemTurn, isHeartbeatSessionKey, resolveSystemNoiseSettings, type InputProvenanceLike, type TurnSignals } from "../system-noise.js";
 import { AlignmentAckTracker } from "../alignment-ack.js";
-import { IDENTITY_TOOL, IdentityProvenanceTracker, attestIdentityArgs, effectiveToolName, mirrorIdentityToWorkspace, removedFieldOf } from "../identity-provenance.js";
+import { IDENTITY_TOOL, sharedIdentityTracker, attestIdentityArgs, effectiveToolName, mirrorIdentityToWorkspace, removedFieldOf } from "../identity-provenance.js";
 
 /** Local-only features that are switched off in remote mode (listed in the PR / README). */
 export const REMOTE_DISABLED_FEATURES: readonly string[] = [
@@ -292,7 +292,7 @@ export function registerRemoteMode(
   // brain_identity provenance: the plugin, not the model, says whether outside content reached this run.
   const identityCfg = config as { identityMirror?: boolean; identityTrustedTools?: string[] };
   const memoryTools = new Set<string>([...REMOTE_TOOL_NAMES, ...Object.keys(BRAIN_TOOL_DEFS), "memory_search", "memory_get"]);
-  const identityProv = new IdentityProvenanceTracker((n) => memoryTools.has(n) || n.startsWith("brain_"), identityCfg.identityTrustedTools ?? []);
+  const identityProv = sharedIdentityTracker((n) => memoryTools.has(n) || n.startsWith("brain_"), identityCfg.identityTrustedTools ?? []);
   const provKey = (c: { sessionKey?: string; sessionId?: string } | undefined) => c?.sessionKey ?? c?.sessionId ?? "";
   let noiseSkipped = 0;
   if (noise.invalidPatterns.length) log.warn(logFields({ op: "system_noise.patterns", outcome: "invalid", count: noise.invalidPatterns.length, note: "ignored invalid systemTurnPatterns entries" }));
@@ -468,6 +468,7 @@ export function registerRemoteMode(
           const conn = conns.get(who.agentId);
           if (!conn?.client) return brainToolResult(`openwave (remote mode): no brain service connection for agent "${who.agentId}": ${conn?.lastError ?? "not configured"}`, { isError: true });
           const args = name === IDENTITY_TOOL ? attestIdentityArgs(params ?? {}, identityProv, provKey(toolContext)) : (params ?? {});
+          if (name === IDENTITY_TOOL && args["attested_provenance"]) log.info(logFields({ op: "identity.attest", agentId: who.agentId, origin: (args["attested_provenance"] as { origin: string }).origin, session: provKey(toolContext) }));
           const r = await call(who.agentId, `tool.${name}`, name, args);
           if (r && !r.isError && name === IDENTITY_TOOL && identityCfg.identityMirror === true && ["add", "change", "remove"].includes(String(args["action"]))) {
             void mirrorIdentity(who.agentId, removedFieldOf(args));
@@ -923,7 +924,11 @@ export function registerRemoteMode(
   });
 
   api.on("after_tool_call", (event: { toolName?: string; params?: Record<string, unknown>; result?: unknown; error?: unknown }, hookCtx: AgentHookCtx) => {
-    try { identityProv.toolResult(provKey(hookCtx), effectiveToolName(event?.toolName, event?.params), event?.result ?? event?.error ?? ""); } catch { /* observe only */ }
+    try {
+      const tool = effectiveToolName(event?.toolName, event?.params);
+      identityProv.toolResult(provKey(hookCtx), tool, event?.result ?? event?.error ?? "");
+      if (process.env["XANIMA_DEBUG_PROVENANCE"]) log.info(logFields({ op: "identity.taint", tool, session: provKey(hookCtx) }));
+    } catch { /* observe only */ }
     return undefined;
   });
 

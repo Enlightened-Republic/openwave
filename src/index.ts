@@ -50,7 +50,7 @@ import { AgentRoster, isDynamicAgents, type AutoAgentsConfig, type AgentsSpec } 
 import { BRAIN_TOOL_OUTPUT_SCHEMA, brainToolResult } from "./tool-result.js";
 import type { BrainConnectionInfo } from "./settings-contract.js";
 import { AlignmentAckTracker } from "./alignment-ack.js";
-import { IDENTITY_TOOL, IdentityProvenanceTracker, attestIdentityArgs, effectiveToolName, mirrorIdentityToWorkspace, removedFieldOf } from "./identity-provenance.js";
+import { IDENTITY_TOOL, sharedIdentityTracker, attestIdentityArgs, effectiveToolName, mirrorIdentityToWorkspace, removedFieldOf } from "./identity-provenance.js";
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 //
@@ -752,7 +752,7 @@ export default definePluginEntry({
     if (noise.invalidPatterns.length) log.warn(logFields({ op: "system_noise.patterns", outcome: "invalid", count: noise.invalidPatterns.length }));
     // brain_identity provenance (see identity-provenance.ts): attested by the plugin, never by the model.
     const memoryToolNames = new Set<string>([...OPENWAVE_TOOL_NAMES, ...Object.keys(core.ROOM_TOOL_DEFS), "memory_search", "memory_get"]);
-    const identityProv = new IdentityProvenanceTracker((n) => memoryToolNames.has(n) || n.startsWith("brain_"), config.identityTrustedTools ?? []);
+    const identityProv = sharedIdentityTracker((n) => memoryToolNames.has(n) || n.startsWith("brain_"), config.identityTrustedTools ?? []);
     const provKey = (c: { sessionKey?: string; sessionId?: string } | undefined) => c?.sessionKey ?? c?.sessionId ?? "";
     const mirrorIdentityLocal = async (agentId: string, removed: string[]): Promise<void> => {
       try {

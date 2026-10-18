@@ -101,3 +101,13 @@ describe.skipIf(!HAVE_SERVER)("brain_identity through the remote proxy (real xan
     expect(readFileSync(join(ws, "IDENTITY.md"), "utf8")).toContain("- **Name:** Rid");
   });
 });
+
+test("one tracker per process: a second register() (OpenClaw runs several registries) sees the same taint", async () => {
+  const { sharedIdentityTracker } = await import("../src/identity-provenance.js");
+  const a = sharedIdentityTracker(isMem);
+  const b = sharedIdentityTracker(isMem, ["x"]);
+  expect(a).toBe(b);
+  b.toolResult("shared-s", "web_fetch", "page");
+  expect(a.attest("shared-s", "v").origin).toBe("tool_output");
+  a.endRun("shared-s");
+});

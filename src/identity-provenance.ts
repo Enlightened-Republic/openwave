@@ -40,7 +40,12 @@ export class IdentityProvenanceTracker {
   private runTools = new Map<string, Set<string>>();
   private runSender = new Map<string, boolean>();
   private echo = new Map<string, string>();
-  constructor(private readonly isMemoryTool: (name: string) => boolean, private readonly trusted: readonly string[] = []) {}
+  constructor(private isMemoryTool: (name: string) => boolean, private trusted: readonly string[] = []) {}
+  configure(isMemoryTool: (name: string) => boolean, trusted: readonly string[] = []): this {
+    this.isMemoryTool = isMemoryTool;
+    this.trusted = trusted;
+    return this;
+  }
 
   /** after_tool_call: non-memory tool output taints the run and feeds the echo buffer. */
   toolResult(session: string, toolName: string, result: unknown): void {
@@ -80,6 +85,17 @@ export class IdentityProvenanceTracker {
     return false;
   }
   clear(): void { this.runTools.clear(); this.runSender.clear(); this.echo.clear(); }
+}
+
+const SHARED = Symbol.for("xanima.identityProvenance");
+/**
+ * One tracker per process. OpenClaw can call register() more than once (the gateway's runtime registry and
+ * per-run registries), so the tool factory and the hooks can come from different plugin instances; they must
+ * still see the same taint. Verified on OpenClaw 2026.9.8: after_tool_call and the tool ran in different instances.
+ */
+export function sharedIdentityTracker(isMemoryTool: (name: string) => boolean, trusted: readonly string[] = []): IdentityProvenanceTracker {
+  const g = globalThis as unknown as Record<symbol, IdentityProvenanceTracker | undefined>;
+  return (g[SHARED] ??= new IdentityProvenanceTracker(isMemoryTool, trusted)).configure(isMemoryTool, trusted);
 }
 
 /** Stamp a brain_identity call: drop whatever the model put in attested_provenance and set the plugin's. */
