@@ -4,8 +4,8 @@
   "legacyPluginIds": [
     "openwave"
   ],
-  "version": "0.3.0",
-  "description": "Xanima (formerly openwave): autonomic memory and agent continuity for OpenClaw agents. Injects identity, goals and query-relevant recall (with confidence and relative-time labels) into every turn, and runs the sleep system. Powered by xanima-core. 0.2.0 adds a decision ledger, versioned goals with drift detection, alignment notes and goal triggers; 0.3.0 adds reflection, experience replay, hypotheses / questions / assumptions, commitments and plans (park / resume briefings) and meta-tools.",
+  "version": "0.4.0",
+  "description": "Xanima (formerly openwave): autonomic memory and agent continuity for OpenClaw agents. Injects identity, goals and query-relevant recall (with confidence and relative-time labels) into every turn, and runs the sleep system. Powered by xanima-core. 0.2.0 adds a decision ledger, versioned goals with drift detection, alignment notes and goal triggers; 0.3.0 adds reflection, experience replay, hypotheses / questions / assumptions, commitments and plans (park / resume briefings) and meta-tools; 0.4.0 adds the portable Soul Package (brain_export_soul for the agent's own brain, and the brain_review queue for imported identity / goal changes).",
   "activation": {
     "onStartup": true
   },
@@ -45,7 +45,8 @@
       "brain_changes",
       "brain_conflicts",
       "brain_briefing",
-      "brain_forget_impact"
+      "brain_forget_impact",
+      "brain_export_soul"
     ]
   },
   "configSchema": {
@@ -376,6 +377,15 @@
         "type": "boolean",
         "default": true,
         "description": "Keyword / time triggers that surface a goal when it becomes relevant."
+      },
+      "soulHeader": {
+        "type": "string",
+        "enum": [
+          "off",
+          "identity",
+          "identity+goals"
+        ],
+        "description": "No schema default on purpose: unset behaves as \"identity\" with the workspace dedupe. Remote mode (0.4.0): show the brain's identity line (and optionally its top 3 active goals) each turn, like local mode's header. Nothing is shown while identity is empty; when left unset it is also skipped while MEMORY.md / USER.md own identity (set it explicitly to show it anyway)."
       },
       "alignmentNoteMaxTokens": {
         "type": "number",

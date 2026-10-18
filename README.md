@@ -362,6 +362,18 @@ the agent id, and a timestamped `.db` backup is taken first. The wipe is
 `DELETE FROM` on learned-state tables plus a re-seed of an empty self-model —
 never `DROP` — so embedding config and vector-table dimension are preserved.
 
+**Soul Package (0.4.0).** `brain_export_soul` exports the agent's **own** brain as a
+portable `xanima-soul/1` package (identity, values, goals with history, top skills,
+decision lessons, key facts, provenance, sha256): a summary by default, or compact
+JSON with `format: "json"`. Sensitive items and the shared brain are never exported
+through the tool. `brain_review` also has a queue mode (`action: "list" | "show"`)
+showing identity / value / goal changes that arrived through an import or a merge
+and wait for a human; `accept` / `reject` need an admin (in remote mode, an admin
+token on the service). Import, fork and merge are operator steps on the brain host:
+`xanima-server soul import | fork | diff | merge | review` (see sharpwave
+`docs/portability.md`). In remote mode the plugin proxies `brain_export_soul` and
+`brain_review`; `brain_import_soul` is never offered to the agent.
+
 ---
 
 ## Brain databases

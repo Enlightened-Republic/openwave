@@ -91,12 +91,15 @@ export const REMOTE_TOOL_NAMES = [
   "brain_conflicts",
   "brain_briefing",
   "brain_forget_impact",
+  // Xanima 0.4.0 Soul Package: export of SELF only (agent-safe). brain_review (above) also carries the review-queue
+  // mode; its accept / reject and brain_import_soul need an admin token on the service — import / merge stay CLI.
+  "brain_export_soul",
 ] as const;
 
 /** Service plumbing (xanima-server >= 0.2.0): alignment note + goal triggers for this turn. Not exposed to the model. */
 export const TURN_CONTEXT_TOOL = "brain_turn_context";
 const CONTINUITY_TOOLS = new Set<string>(["brain_record_decision", "brain_update_decision_outcome", "brain_query_decisions", "brain_set_goal", "brain_update_goal", "brain_list_goals",
-  "brain_reflect", "brain_replay", "brain_hypothesis", "brain_question", "brain_list_open", "brain_commit", "brain_commitments", "brain_plan", "brain_changes", "brain_conflicts", "brain_briefing", "brain_forget_impact"]);
+  "brain_reflect", "brain_replay", "brain_hypothesis", "brain_question", "brain_list_open", "brain_commit", "brain_commitments", "brain_plan", "brain_changes", "brain_conflicts", "brain_briefing", "brain_forget_impact", "brain_export_soul"]);
 
 // Copied verbatim from xanima-core buildRecallContext so the injected block
 // is byte-identical in shape to local mode.
@@ -808,8 +811,20 @@ export function registerRemoteMode(
         const g = await call(agentId, "before_prompt_build.goals", TURN_CONTEXT_TOOL, { query: (query ?? "").slice(0, 2000) });
         if (g && !g.isError) {
           try {
-            const parsed = JSON.parse(g.text) as { text?: string; noteId?: number | null; noteIds?: number[] };
+            const parsed = JSON.parse(g.text) as { text?: string; noteId?: number | null; noteIds?: number[]; identity?: string; activeGoals?: string[] };
             goalsBlock = String(parsed.text ?? "");
+            // Xanima 0.4.0 soulHeader: the brain's identity (and optionally its top active goals) as a short header —
+            // parity with local mode's never-compacted header, so a soul imported into a fresh brain is visible.
+            // Unset (default "identity"): skipped when MEMORY.md / USER.md owns identity (externalMemoryActive).
+            // Set explicitly by the operator: honoured even then. Empty identity → nothing.
+            const explicit = (config as { soulHeader?: unknown }).soulHeader;
+            const sh = String(explicit ?? "identity");
+            if (sh !== "off" && (explicit !== undefined || !helpers.contextOptsFor(agentId).externalMemoryActive)) {
+              const lines: string[] = [];
+              if (parsed.identity) lines.push(`[BRAIN: identity] ${String(parsed.identity).replace(/\s+/g, " ").slice(0, 400)}`);
+              if (sh === "identity+goals" && Array.isArray(parsed.activeGoals) && parsed.activeGoals.length) lines.push(`[BRAIN: active goals] ${parsed.activeGoals.map((t) => String(t).slice(0, 80)).join(" · ")}`);
+              if (lines.length) goalsBlock = goalsBlock ? `${lines.join("\n")}\n\n${goalsBlock}` : lines.join("\n");
+            }
             alignmentAcks.offer(agentId, Array.isArray(parsed.noteIds) ? parsed.noteIds : parsed.noteId);
           } catch { /* ignore */ }
         } else if (g?.isError && /unknown tool/i.test(g.text)) {
