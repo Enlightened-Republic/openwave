@@ -1,5 +1,19 @@
 # Xanima for OpenClaw (`xanima-openclaw`, formerly openwave)
 
+> **0.3.0 (pre-release, not published): reflection, replay, open items, commitments + plans, meta-tools.**
+> Tools `brain_reflect`, `brain_replay`, `brain_hypothesis`, `brain_question`,
+> `brain_list_open`, `brain_commit`, `brain_commitments`, `brain_plan`,
+> `brain_changes`, `brain_conflicts`, `brain_briefing`, `brain_forget_impact`
+> — local and remote (proxied; private brain). The agent's own "I think …
+> because …", "open question: …" and "I'm assuming …" become drafts. The
+> `[BRAIN: goals]` block may also carry one overdue-commitment nudge (acked with
+> the alignment note after the first real reply) and one relevant open
+> question. Settings: `reflection` (`off` | `sleep`), `reflectionLlm`,
+> `reflectionWindowDays`, `openItemCapture`, `openItemDraftTtlDays`,
+> `openItemSurfacing`, `commitmentNudges`, `replayMaxChars`,
+> `metaToolMaxChars` (remote mode: the service's config.json `brain` block).
+> Needs xanima-server 0.3.0 for the new tools.
+>
 > **0.2.0 (pre-release, not published): decision ledger + goals / drift.**
 > Tools `brain_record_decision`, `brain_update_decision_outcome`,
 > `brain_query_decisions`, `brain_set_goal`, `brain_update_goal` (versions and

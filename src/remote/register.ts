@@ -78,18 +78,32 @@ export const REMOTE_TOOL_NAMES = [
   "brain_set_goal",
   "brain_update_goal",
   "brain_list_goals",
+  // Xanima 0.3.0 reflection, replay, open items, commitments, plans, meta-tools (private brain only)
+  "brain_reflect",
+  "brain_replay",
+  "brain_hypothesis",
+  "brain_question",
+  "brain_list_open",
+  "brain_commit",
+  "brain_commitments",
+  "brain_plan",
+  "brain_changes",
+  "brain_conflicts",
+  "brain_briefing",
+  "brain_forget_impact",
 ] as const;
 
 /** Service plumbing (xanima-server >= 0.2.0): alignment note + goal triggers for this turn. Not exposed to the model. */
 export const TURN_CONTEXT_TOOL = "brain_turn_context";
-const CONTINUITY_TOOLS = new Set<string>(["brain_record_decision", "brain_update_decision_outcome", "brain_query_decisions", "brain_set_goal", "brain_update_goal", "brain_list_goals"]);
+const CONTINUITY_TOOLS = new Set<string>(["brain_record_decision", "brain_update_decision_outcome", "brain_query_decisions", "brain_set_goal", "brain_update_goal", "brain_list_goals",
+  "brain_reflect", "brain_replay", "brain_hypothesis", "brain_question", "brain_list_open", "brain_commit", "brain_commitments", "brain_plan", "brain_changes", "brain_conflicts", "brain_briefing", "brain_forget_impact"]);
 
 // Copied verbatim from xanima-core buildRecallContext so the injected block
 // is byte-identical in shape to local mode.
 export const RECALL_BLOCK_HEADER =
   "[BRAIN: on your mind — ·gist items are rough unattributed fragments; do not assert them as facts about Hailey without checking]";
 export const REMOTE_BANNER =
-  "[Xanima remote] Memories from the Xanima brain service (private + shared) are pre-loaded below with their age; (?) = low confidence. Tools: brain_query (as_of = what you believed then), brain_write, brain_retract / brain_supersede (give a reason), brain_status, brain_record_decision / brain_set_goal.";
+  "[Xanima remote] Memories from the Xanima brain service (private + shared) are pre-loaded below with their age; (?) = low confidence. Tools: brain_query (as_of = what you believed then), brain_write, brain_retract / brain_supersede (give a reason), brain_status, brain_record_decision / brain_set_goal, brain_plan / brain_commit, brain_briefing / brain_changes to catch up.";
 export const REMOTE_DOWN_NOTICE =
   "[Xanima remote] Brain service unavailable this turn — no memories were loaded; brain_* tools may fail until it recovers.";
 /** How long a remote brain_status result is reused for the injection footer. */
@@ -794,9 +808,9 @@ export function registerRemoteMode(
         const g = await call(agentId, "before_prompt_build.goals", TURN_CONTEXT_TOOL, { query: (query ?? "").slice(0, 2000) });
         if (g && !g.isError) {
           try {
-            const parsed = JSON.parse(g.text) as { text?: string; noteId?: number | null };
+            const parsed = JSON.parse(g.text) as { text?: string; noteId?: number | null; noteIds?: number[] };
             goalsBlock = String(parsed.text ?? "");
-            alignmentAcks.offer(agentId, parsed.noteId);
+            alignmentAcks.offer(agentId, Array.isArray(parsed.noteIds) ? parsed.noteIds : parsed.noteId);
           } catch { /* ignore */ }
         } else if (g?.isError && /unknown tool/i.test(g.text)) {
           turnContextUnsupported.add(agentId); // older service: stop asking
@@ -864,8 +878,9 @@ export function registerRemoteMode(
       const paired = noise.enabled && noisePairs.takeReplySkip(sessionKey);
       if (paired) { noiseSkipped++; log.debug?.(logFields({ agentId, op: "llm_output", outcome: "skipped_system_noise", reason: "pair:reply_to_skipped_user_turn", via: "session", role: "assistant" })); return; }
       if (skipTurn(agentId, "llm_output", { role: "assistant", content, sessionKey, trigger: hookCtx?.trigger, inputProvenance: hookCtx?.inputProvenance, prompt: event?.prompt })) return;
-      const ackId = alignmentAcks.replied(agentId, content);
-      if (ackId !== null) void call(agentId, "llm_output.alignment_ack", TURN_CONTEXT_TOOL, { ack_note_id: ackId });
+      const ackIds = alignmentAcks.repliedAll(agentId, content);
+      if (ackIds.length === 1) void call(agentId, "llm_output.alignment_ack", TURN_CONTEXT_TOOL, { ack_note_id: ackIds[0] }); // 0.2.0 services take the single form
+      else if (ackIds.length > 1) void call(agentId, "llm_output.alignment_ack", TURN_CONTEXT_TOOL, { ack_note_ids: ackIds });
       const isCron = /^agent:[^:]+:cron:/.test(sessionKey) || sessionKey.startsWith("cron:");
       const importance = isCron ? 0.1 : core.scoreImportance("assistant", content);
       appendEpisodeRemote(agentId, sessionKey, "assistant", content, importance);
