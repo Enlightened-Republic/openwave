@@ -117,7 +117,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
     expect(bad.codeMode.error).toContain("query");
   });
 
-  test("all 38 proxied tools return content text + details.text (none project to {})", async () => {
+  test("all 39 proxied tools return content text + details.text (none project to {})", async () => {
     const [a, b, c] = ids as [string, string, string];
     const calls: Array<[string, Record<string, unknown>, RegExp]> = [
       ["brain_query", { query: "Hailey" }, /Hailey has a corgi named Biscuit/],
@@ -129,7 +129,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       ["brain_review", { node_id: a, quality: 3 }, /./],
       ["brain_edges", { node_id: a }, /./],
       ["brain_supersede", { old_node_id: b, new_content: "Hailey switched to cortados." }, /./],
-      ["brain_status", {}, /Brain status \(schema v24\)/],
+      ["brain_status", {}, /Brain status \(schema v25\)/],
       ["brain_export_soul", {}, /xanima-soul\/1, compact\)/],
       ["brain_review", { action: "list" }, /No pending review items/],
       ["brain_set_goal", { title: "Plan Hailey's birthday dinner", priority: "high" }, /Goal set: \S+ P2 \[active\]/],
@@ -160,6 +160,8 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       ["brain_room_query", { room: "team", query: "Hailey" }, /room team not found/],
       ["brain_subscribe", { room: "team" }, /room team not found/],
       ["brain_focus", { suppress: ["topic:tea"], ttl: 1 }, /Focus set: suppress topic:tea/],
+      // brain_identity: no tool ran in this test session, so the plugin attests agent_turn and it applies
+      ["brain_identity", { action: "add", target: "field", field: "Vibe", value: "steady", reason: "settled into it" }, /Identity updated \(v1\)/],
     ];
     const EXPECTED_ERRORS = new Set(["brain_reset", "brain_publish", "brain_unpublish", "brain_room_query", "brain_subscribe"]);
     expect([...new Set(calls.map(([n]) => n))].sort()).toEqual([...REMOTE_TOOL_NAMES].sort());
@@ -210,7 +212,8 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
   test("before_prompt_build recall injects the real Hailey memories in remote mode", async () => {
     const [res] = await mock.fire("before_prompt_build", { prompt: "What do you remember about Hailey?" }, { agentId: AGENT, sessionKey: `agent:${AGENT}:main`, sessionId: "s-main" });
     const block = (res as { prependContext?: string } | undefined)?.prependContext ?? "";
-    expect(block.startsWith(RECALL_BLOCK_HEADER)).toBe(true);
+    // the brain_identity add in the all-tools test shows in the always-on identity header from the next turn
+    expect(block.startsWith("[BRAIN: identity] - **Vibe:** steady\n\n" + RECALL_BLOCK_HEADER)).toBe(true);
     expect(block).toContain("Hailey birthday: Hailey's birthday is March 3rd.");
     // brain_supersede (in the all-tools test above) replaced the coffee fact:
     // only the current version is injected (the old one is history, reachable
