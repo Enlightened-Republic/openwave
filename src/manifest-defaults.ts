@@ -65,5 +65,7 @@ export const MANIFEST_CONFIG_DEFAULTS: Record<string, unknown> = {
   "replayMaxChars": 1600,
   "metaToolMaxChars": 2400,
   "quarantine": "log",
-  "focusDefaultTtl": 3
+  "focusDefaultTtl": 3,
+  "identityMirror": false,
+  "identityTrustedTools": []
 };

@@ -387,10 +387,27 @@ and only ever shapes recall; the identity, goals and rules header is untouched.
 Sensitive memories are injected only when the turn names their topic, and
 `confirm_before_acting` ones keep their marker. Settings: `quarantine` (`log` by
 default: identity / goal / rule writes from tool output, other agents, imports or
-injection-looking text are recorded and still applied; `enforce` holds them in
-`brain_review`), `injectionCategories`, `focusDefaultTtl`. In remote mode the
+injection-looking text: goal writes are recorded and still applied, identity /
+value writes are held; `enforce` holds them all in `brain_review`), `injectionCategories`, `focusDefaultTtl`. In remote mode the
 service's own settings apply. See sharpwave `docs/rooms.md` and
 `docs/security-model.md`.
+
+**Agents evolve their own identity (`brain_identity`, 0.5.0 follow-up).** The agent
+can add, change or remove a line of its identity header (`- **Field:** value`) or a
+core value, with a short reason: `brain_identity {action: "change", target: "field",
+field: "Vibe", value: "…", reason: "…"}` (`get` / `history` to read). A change from
+the agent's own turn applies at once and is versioned; the operator sees it in
+`brain_status` and `xanima-server identity history --agent X`, and can undo one with
+`xanima-server identity revert <version>`. The plugin attests where each change came
+from: if any non-memory tool (web, read, exec, …) returned output in the same run, the
+run started from a non-owner sender (with `commands.ownerAllowFrom` set), or the new
+text repeats recent tool output, the change waits in `brain_review` instead. Whatever
+the model claims about provenance is ignored. Locked fields (`identity.locked`,
+default `["Name"]`), a daily cap (`identity.maxChangesPerDay`, 5) and size caps apply.
+Settings: `identityMirror` (false; when true, applied changes are written back to the
+workspace `IDENTITY.md` field lines and a managed "Evolved values" block in
+`SOUL.md`), `identityTrustedTools` ([]; tools whose output doesn't count as outside
+content), `identity` (local mode guardrails; in remote mode set them on the service).
 
 ---
 

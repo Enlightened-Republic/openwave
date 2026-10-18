@@ -35,6 +35,7 @@ import type { BrainConnectionInfo } from "../settings-contract.js";
 import { AgentRoster, Provisioner, isDynamicAgents, type AgentsSpec, type AutoAgentsConfig } from "./agents.js";
 import { NoisePairTracker, classifySystemTurn, isHeartbeatSessionKey, resolveSystemNoiseSettings, type InputProvenanceLike, type TurnSignals } from "../system-noise.js";
 import { AlignmentAckTracker } from "../alignment-ack.js";
+import { IDENTITY_TOOL, IdentityProvenanceTracker, attestIdentityArgs, effectiveToolName, mirrorIdentityToWorkspace, removedFieldOf } from "../identity-provenance.js";
 
 /** Local-only features that are switched off in remote mode (listed in the PR / README). */
 export const REMOTE_DISABLED_FEATURES: readonly string[] = [
@@ -101,13 +102,14 @@ export const REMOTE_TOOL_NAMES = [
   "brain_room_query",
   "brain_subscribe",
   "brain_focus",
+  "brain_identity",
 ] as const;
 
 /** Service plumbing (xanima-server >= 0.2.0): alignment note + goal triggers for this turn. Not exposed to the model. */
 export const TURN_CONTEXT_TOOL = "brain_turn_context";
 const CONTINUITY_TOOLS = new Set<string>(["brain_record_decision", "brain_update_decision_outcome", "brain_query_decisions", "brain_set_goal", "brain_update_goal", "brain_list_goals",
   "brain_reflect", "brain_replay", "brain_hypothesis", "brain_question", "brain_list_open", "brain_commit", "brain_commitments", "brain_plan", "brain_changes", "brain_conflicts", "brain_briefing", "brain_forget_impact", "brain_export_soul",
-  "brain_room", "brain_publish", "brain_unpublish", "brain_room_query", "brain_subscribe", "brain_focus"]);
+  "brain_room", "brain_publish", "brain_unpublish", "brain_room_query", "brain_subscribe", "brain_focus", "brain_identity"]);
 
 // Copied verbatim from xanima-core buildRecallContext so the injected block
 // is byte-identical in shape to local mode.
@@ -287,6 +289,11 @@ export function registerRemoteMode(
   const noise = resolveSystemNoiseSettings(config);
   const noisePairs = new NoisePairTracker();
   const alignmentAcks = new AlignmentAckTracker();
+  // brain_identity provenance: the plugin, not the model, says whether outside content reached this run.
+  const identityCfg = config as { identityMirror?: boolean; identityTrustedTools?: string[] };
+  const memoryTools = new Set<string>([...REMOTE_TOOL_NAMES, ...Object.keys(BRAIN_TOOL_DEFS), "memory_search", "memory_get"]);
+  const identityProv = new IdentityProvenanceTracker((n) => memoryTools.has(n) || n.startsWith("brain_"), identityCfg.identityTrustedTools ?? []);
+  const provKey = (c: { sessionKey?: string; sessionId?: string } | undefined) => c?.sessionKey ?? c?.sessionId ?? "";
   let noiseSkipped = 0;
   if (noise.invalidPatterns.length) log.warn(logFields({ op: "system_noise.patterns", outcome: "invalid", count: noise.invalidPatterns.length, note: "ignored invalid systemTurnPatterns entries" }));
   /** True when the turn must not be written to memory (logged at debug). */
@@ -427,6 +434,22 @@ export function registerRemoteMode(
     }
   };
 
+  // identityMirror (default off): write the brain's identity back to the workspace IDENTITY.md / SOUL.md.
+  const mirrorIdentity = async (agentId: string, removed: string[]): Promise<void> => {
+    try {
+      const resolveWs = (api.runtime as { agent?: { resolveAgentWorkspaceDir?: (cfg: unknown, id: string) => string } } | undefined)?.agent?.resolveAgentWorkspaceDir;
+      const dir = resolveWs?.(api.runtime?.config?.current?.(), agentId);
+      if (!dir) return;
+      const g = await call(agentId, "identity.mirror", IDENTITY_TOOL, { action: "get", format: "json" });
+      if (!g || g.isError) return;
+      const state = JSON.parse(g.text) as { fields: Array<{ key: string; value: string }>; values: Array<{ label: string; content: string; source_type?: string | null }> };
+      const changed = mirrorIdentityToWorkspace(dir, state, removed);
+      if (changed.length) log.info(logFields({ op: "identity.mirror", outcome: "ok", agentId, files: changed.join(",") }));
+    } catch (err) {
+      log.warn(logFields({ op: "identity.mirror", outcome: "error", agentId, error: redact(String(err)) }));
+    }
+  };
+
   // ── Tools: proxy to the service ───────────────────────────────────────────
   // Results go through brainToolResult so `details` carries the text: OpenClaw
   // Code Mode / catalog calls hand the model ONLY `details` (see tool-result.ts).
@@ -444,7 +467,11 @@ export function registerRemoteMode(
           await ensureAgent(who.agentId);
           const conn = conns.get(who.agentId);
           if (!conn?.client) return brainToolResult(`openwave (remote mode): no brain service connection for agent "${who.agentId}": ${conn?.lastError ?? "not configured"}`, { isError: true });
-          const r = await call(who.agentId, `tool.${name}`, name, params ?? {});
+          const args = name === IDENTITY_TOOL ? attestIdentityArgs(params ?? {}, identityProv, provKey(toolContext)) : (params ?? {});
+          const r = await call(who.agentId, `tool.${name}`, name, args);
+          if (r && !r.isError && name === IDENTITY_TOOL && identityCfg.identityMirror === true && ["add", "change", "remove"].includes(String(args["action"]))) {
+            void mirrorIdentity(who.agentId, removedFieldOf(args));
+          }
           if (!r) {
             const st = conns.get(who.agentId);
             return brainToolResult(st?.status === "unauthorized"
@@ -880,6 +907,7 @@ export function registerRemoteMode(
       const isCron = /^agent:[^:]+:cron:/.test(sessionKey) || sessionKey.startsWith("cron:");
       const owners = readOwnerAllowFrom(api.runtime?.config?.current?.());
       const origin = classifyOrigin({ channelId: hookCtx?.channelId, senderId: event?.senderId, from: event?.from, sessionKey }, owners);
+      identityProv.newRun(provKey({ sessionKey, sessionId: hookCtx?.sessionId }), owners.length > 0 && origin === "untrusted");
       const scored = isCron ? 0.1 : core.scoreImportance("user", content);
       const importance = owners.length === 0 ? scored : capImportance(origin, scored, config.llmExtractionMinImportance);
       appendEpisodeRemote(agentId, sessionKey, "user", content, importance);
@@ -891,6 +919,16 @@ export function registerRemoteMode(
 
   api.on("before_tool_call", (event: { toolName?: string; params?: Record<string, unknown> }, hookCtx: AgentHookCtx) => {
     try { alignmentAcks.toolCall(helpers.resolveAgentId(undefined, hookCtx), event?.toolName, event?.params); } catch { /* observe only */ }
+    return undefined;
+  });
+
+  api.on("after_tool_call", (event: { toolName?: string; params?: Record<string, unknown>; result?: unknown; error?: unknown }, hookCtx: AgentHookCtx) => {
+    try { identityProv.toolResult(provKey(hookCtx), effectiveToolName(event?.toolName, event?.params), event?.result ?? event?.error ?? ""); } catch { /* observe only */ }
+    return undefined;
+  });
+
+  api.on("agent_end", (_event: unknown, hookCtx: AgentHookCtx) => {
+    try { identityProv.endRun(provKey(hookCtx)); } catch { /* observe only */ }
     return undefined;
   });
 

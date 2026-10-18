@@ -52,7 +52,8 @@
       "brain_publish",
       "brain_unpublish",
       "brain_room_query",
-      "brain_subscribe"
+      "brain_subscribe",
+      "brain_identity"
     ]
   },
   "configSchema": {
@@ -480,6 +481,61 @@
         ],
         "default": "log",
         "description": "0.5.0 poisoning quarantine for identity / value / goal / rule writes from untrusted sources (tool output, other agents, imports, injection-looking text). log = record and still apply (measure false positives first); enforce = hold for review (brain_review); off = no checks. Local mode; on remote mode the brain service's own setting applies."
+      },
+      "identity": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "brain_identity guardrails (agents add to / change their own identity and values). Local mode; on remote mode set them in the brain service config.",
+        "properties": {
+          "locked": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Identity fields the agent can't change (default [\"Name\"])."
+          },
+          "maxChangesPerDay": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Applied agent changes per rolling 24 h (default 5)."
+          },
+          "maxFieldNameChars": {
+            "type": "number",
+            "minimum": 1
+          },
+          "maxFieldChars": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Max chars of one field value (default 300)."
+          },
+          "maxValueChars": {
+            "type": "number",
+            "minimum": 1,
+            "description": "Max chars of one core value (default 600)."
+          },
+          "maxIdentityChars": {
+            "type": "number",
+            "minimum": 100,
+            "description": "Max chars of the whole identity header (default 1000)."
+          },
+          "requireAttestation": {
+            "type": "boolean",
+            "description": "Hold identity changes that arrive without host attestation (e.g. bare MCP clients). Default false."
+          }
+        }
+      },
+      "identityMirror": {
+        "type": "boolean",
+        "default": false,
+        "description": "Write applied brain_identity changes back to the agent workspace: IDENTITY.md field lines and a managed 'Evolved values' block in SOUL.md. Off by default (the brain is the source of truth; the header shows changes either way)."
+      },
+      "identityTrustedTools": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "Tools whose output does NOT mark a turn as tool-influenced for brain_identity (default none: any non-memory tool output means an identity change in that run waits for review)."
       },
       "injectionCategories": {
         "type": "object",
