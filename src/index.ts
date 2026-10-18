@@ -50,6 +50,7 @@ import { AgentRoster, isDynamicAgents, type AutoAgentsConfig, type AgentsSpec } 
 import { BRAIN_TOOL_OUTPUT_SCHEMA, brainToolResult } from "./tool-result.js";
 import type { BrainConnectionInfo } from "./settings-contract.js";
 import { AlignmentAckTracker } from "./alignment-ack.js";
+import { IDENTITY_TOOL, sharedIdentityTracker, attestIdentityArgs, effectiveToolName, mirrorIdentityToWorkspace, removedFieldOf } from "./identity-provenance.js";
 
 // ─── Config ────────────────────────────────────────────────────────────────────
 //
@@ -68,6 +69,10 @@ type OpenwaveConfig = core.BrainConfig & RemoteConfigFields & Omit<AutoAgentsCon
   // keys inherit the flat value above. See settings-contract.ts for the
   // field list and openclaw.plugin.json for the persisted schema.
   personaOverrides?: Record<string, PersonaOverrideFields>;
+  /** brain_identity: write applied identity changes back to the workspace IDENTITY.md / SOUL.md (default false). */
+  identityMirror?: boolean;
+  /** brain_identity: tools whose output does not make an identity change "tool_output" (default none). */
+  identityTrustedTools?: string[];
   /** When true (default), omit host-curated durable identity/goals when MEMORY.md/USER.md present (Engram Graft A). */
   curatedTierDedupe?: boolean;
   /** Host cron expr for LLM consolidation (Engram Graft B). Default staggered after memory-core dreaming. */
@@ -745,6 +750,23 @@ export default definePluginEntry({
     const noisePairs = new NoisePairTracker();
     const alignmentAcks = new AlignmentAckTracker();
     if (noise.invalidPatterns.length) log.warn(logFields({ op: "system_noise.patterns", outcome: "invalid", count: noise.invalidPatterns.length }));
+    // brain_identity provenance (see identity-provenance.ts): attested by the plugin, never by the model.
+    const memoryToolNames = new Set<string>([...OPENWAVE_TOOL_NAMES, ...Object.keys(core.ROOM_TOOL_DEFS), "memory_search", "memory_get"]);
+    const identityProv = sharedIdentityTracker((n) => memoryToolNames.has(n) || n.startsWith("brain_"), config.identityTrustedTools ?? []);
+    const provKey = (c: { sessionKey?: string; sessionId?: string } | undefined) => c?.sessionKey ?? c?.sessionId ?? "";
+    const mirrorIdentityLocal = async (agentId: string, removed: string[]): Promise<void> => {
+      try {
+        const resolveWs = (api.runtime as { agent?: { resolveAgentWorkspaceDir?: (cfg: unknown, id: string) => string } } | undefined)?.agent?.resolveAgentWorkspaceDir;
+        const dir = resolveWs?.(api.runtime?.config?.current?.(), agentId);
+        if (!dir) return;
+        const g = await dispatchBrainTool(IDENTITY_TOOL, agentId, { action: "get", format: "json" }, config, "openwave");
+        if (g.isError) return;
+        const changed = mirrorIdentityToWorkspace(dir, JSON.parse(g.text), removed);
+        if (changed.length) log.info(logFields({ agentId, op: "identity.mirror", outcome: "ok", files: changed.join(",") }));
+      } catch (err) {
+        log.warn(logFields({ agentId, op: "identity.mirror", outcome: "error", error: String(err) }));
+      }
+    };
     const skipTurn = (agentId: string, op: string, t: Parameters<typeof classifySystemTurn>[0]): boolean => {
       const v = classifySystemTurn(t, noise);
       if (!v.skip) return false;
@@ -762,8 +784,24 @@ export default definePluginEntry({
           async execute(_toolCallId: string, params: Record<string, unknown> | undefined) {
             const who = resolveToolAgent(toolContext);
             if ("error" in who) return brainToolResult(who.error, { isError: true });
-            const r = await dispatchBrainTool(name, who.agentId, params ?? {}, config, "openwave");
+            const args = name === IDENTITY_TOOL ? attestIdentityArgs(params ?? {}, identityProv, provKey(toolContext)) : (params ?? {});
+            const r = await dispatchBrainTool(name, who.agentId, args, config, "openwave");
+            if (!r.isError && name === IDENTITY_TOOL && config.identityMirror === true && ["add", "change", "remove"].includes(String(args["action"]))) void mirrorIdentityLocal(who.agentId, removedFieldOf(args));
             return brainToolResult(r.text, { isError: r.isError });
+          },
+        }),
+        { name },
+      );
+    }
+    // Xanima 0.5.0 rooms live on the brain service. Local mode registers the same names (the manifest's
+    // contracts.tools is one list for both modes) with a clear answer instead of a missing tool.
+    for (const name of Object.keys(core.ROOM_TOOL_DEFS)) {
+      const def = core.ROOM_TOOL_DEFS[name]!;
+      api.registerTool(
+        () => ({
+          name, description: def.description, parameters: def.inputSchema, outputSchema: BRAIN_TOOL_OUTPUT_SCHEMA,
+          async execute() {
+            return brainToolResult(`${name}: rooms need the Xanima brain service (brainMode "remote", xanima-server >= 0.5.0); local mode has no rooms.`, { isError: true });
           },
         }),
         { name },
@@ -1283,7 +1321,7 @@ export default definePluginEntry({
       // Voice keeps its tight budget and is excluded.
       if (surface !== "voice") {
         try {
-          const procBlock = core.buildProceduralContext(agentId, hookCtx?.sessionKey ?? sessionId, recalledIds);
+          const procBlock = core.buildProceduralContext(agentId, hookCtx?.sessionKey ?? sessionId, recalledIds, config);
           if (procBlock) parts.push(procBlock);
         } catch (err) {
           log.warn(logFields({ agentId, sessionId, op: "before_prompt_build.procedural", outcome: "error", error: String(err) }));
@@ -1402,6 +1440,7 @@ export default definePluginEntry({
         { channelId: hookCtx?.channelId, senderId: event?.senderId, from: event?.from, sessionKey },
         ownerAllowFrom,
       );
+      identityProv.newRun(provKey({ sessionKey, sessionId: hookCtx?.sessionId }), ownerAllowFrom.length === 0 ? "unknown" : origin === "owner" ? "owner" : origin === "untrusted" ? "untrusted" : "unknown");
       if (ownerAllowFrom.length === 0 && !warnedNoOwnerList) {
         warnedNoOwnerList = true;
         log.warn(logFields({ op: "provenance_gate", outcome: "inactive", note: "commands.ownerAllowFrom is empty; inbound importance is not capped by sender" }));
@@ -1442,6 +1481,10 @@ export default definePluginEntry({
         const agentId = resolveAgentId(undefined, hookCtx, config.agents);
         alignmentAcks.toolCall(agentId, event?.toolName, event?.params);
       } catch { /* observe only */ }
+      return undefined;
+    });
+    api.on("after_tool_call", (event: { toolName?: string; params?: Record<string, unknown>; result?: unknown; error?: unknown }, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string }) => {
+      try { identityProv.toolResult(provKey(hookCtx), effectiveToolName(event?.toolName, event?.params), event?.result ?? event?.error ?? ""); } catch { /* observe only */ }
       return undefined;
     });
 
@@ -1539,6 +1582,7 @@ export default definePluginEntry({
 
     // agent_end (requires `allowConversationAccess: true` in operator config)
     api.on("agent_end", async (_event: unknown, hookCtx: { agentId?: string; sessionKey?: string; sessionId?: string }) => {
+      try { identityProv.endRun(provKey(hookCtx)); } catch { /* observe only */ }
       const agentId = resolveAgentId(undefined, hookCtx, config.agents);
       if (!config.agents.includes(agentId)) return;
       try {
