@@ -16,6 +16,10 @@
 //
 // Every engine call goes through the `xanima-core` barrel. `harvestExtraction`
 // is also called directly by index.ts's `session_end` hook, so it is exported.
+//
+// Config is taken per agent: index.ts hands in a resolver so the Control UI's
+// per-agent persona overrides (contextBudget, pruneAfterDays, ...) reach the
+// engine on the timer paths too, not only on the hook paths.
 
 import * as core from "xanima-core";
 
@@ -25,6 +29,13 @@ type Logger = {
   error?: (msg: string) => void;
   debug?: (msg: string) => void;
 };
+
+/** A flat engine config, or a per-agent resolver (persona overrides applied). */
+export type ConfigSource = core.BrainConfig | ((agentId: string) => core.BrainConfig);
+
+export function configFor(src: ConfigSource, agentId: string): core.BrainConfig {
+  return typeof src === "function" ? src(agentId) : src;
+}
 
 export type SchedulerHandles = {
   replay: NodeJS.Timeout | null;
@@ -57,6 +68,10 @@ function logFields(fields: Record<string, string | number | boolean | undefined>
 // (bounds fact latency at ~60 min for long-lived channel sessions), from
 // runConsolidationPass (before SWS, so consumed episodes are already flagged
 // llm_extracted), and from index.ts's session_end hook.
+//
+// The queue is drained before the facts are written, so one bad fact must not
+// take the rest of the batch with it: each write is isolated and a failure is
+// logged and counted instead of aborting the loop.
 export async function harvestExtraction(
   agentId: string,
   opPrefix: string,
@@ -64,13 +79,21 @@ export async function harvestExtraction(
   log: Logger,
 ): Promise<void> {
   const facts = await core.drainExtractionQueue(agentId, config, log);
+  let written = 0;
+  let failed = 0;
   for (const fact of facts) {
-    const nodeId = core.writeNode(agentId, fact.type, fact.label, fact.content, {
-      importance: fact.importance,
-      source: "llm_extraction",
-      extractionConfidence: fact.confidence,
-    });
-    core.queueEmbedding(agentId, nodeId);
+    try {
+      const nodeId = core.writeNode(agentId, fact.type, fact.label, fact.content, {
+        importance: fact.importance,
+        source: "llm_extraction",
+        extractionConfidence: fact.confidence,
+      });
+      core.queueEmbedding(agentId, nodeId);
+      written++;
+    } catch (err) {
+      failed++;
+      log.warn(logFields({ agentId, op: `${opPrefix}.fact_write`, outcome: "error", label: String(fact.label ?? "").slice(0, 80), error: String(err) }));
+    }
   }
 
   // T1.3 dual-extraction prevention: mark consumed episodes as llm_extracted
@@ -113,20 +136,20 @@ export async function harvestExtraction(
   }
 
   if (facts.length > 0) {
-    log.info(logFields({ agentId, op: `${opPrefix}.facts_written`, outcome: "ok", count: facts.length }));
+    log.info(logFields({ agentId, op: `${opPrefix}.facts_written`, outcome: "ok", count: written, ...(failed ? { failed } : {}) }));
   }
 }
 
 // ─── Hourly extraction harvest ─────────────────────────────────────────────────
 // In-process, no LLM consolidation. Logs `extraction.tick` per agent.
-function runHarvestTick(agentIds: string[], config: core.BrainConfig, log: Logger): void {
+function runHarvestTick(agentIds: string[], config: ConfigSource, log: Logger): void {
   for (const agentId of agentIds) {
     if (harvestingAgents.has(agentId)) {
       log.info(logFields({ agentId, op: "extraction.tick", outcome: "skipped", reason: "already_running" }));
       continue;
     }
     harvestingAgents.add(agentId);
-    void harvestExtraction(agentId, "sleep_system", config, log)
+    void harvestExtraction(agentId, "sleep_system", configFor(config, agentId), log)
       .then(() => {
         log.info(logFields({ agentId, op: "extraction.tick", outcome: "ok" }));
       })
@@ -148,7 +171,7 @@ function runHarvestTick(agentIds: string[], config: core.BrainConfig, log: Logge
 // via cron_changed (engram-graft.ts::maybeRunConsolidationFromCronEvent).
 export function runConsolidationPass(
   agentIds: string[],
-  config: core.BrainConfig,
+  config: ConfigSource,
   log: Logger,
   trigger: string,
 ): void {
@@ -158,18 +181,19 @@ export function runConsolidationPass(
       continue;
     }
     consolidatingAgents.add(agentId);
+    const cfg = configFor(config, agentId);
     void (async () => {
       try {
-        await harvestExtraction(agentId, "sleep_system", config, log);
+        await harvestExtraction(agentId, "sleep_system", cfg, log);
       } catch (err) {
         log.warn(logFields({ agentId, op: "sleep_system.extraction", outcome: "error", error: String(err) }));
       }
       let gate = false;
       try {
-        gate = core.shouldConsolidate(agentId, config);
+        gate = core.shouldConsolidate(agentId, cfg);
         log.info(logFields({ agentId, op: "sleep_system.tick", trigger, outcome: "ok", consolidate: gate }));
         if (gate) {
-          await core.runConsolidation(agentId, config, log);
+          await core.runConsolidation(agentId, cfg, log);
         }
       } catch (err) {
         log.warn(logFields({ agentId, op: "consolidation.run", outcome: "error", error: String(err) }));
@@ -186,10 +210,13 @@ export function runConsolidationPass(
  * Arm the three recurring in-process sleep-system timers (awake-replay,
  * extraction harvest, embedding sweep). Returns the handles so the caller (index.ts gateway_stop / lifecycle
  * cleanup) can release them for the old runtime generation.
+ *
+ * The timers are unref'd: they must never keep a gateway process alive on
+ * shutdown (the gateway's own servers do that while it runs).
  */
 export function armSchedulers(
   agentIds: string[],
-  config: core.BrainConfig,
+  config: ConfigSource,
   log: Logger,
 ): SchedulerHandles {
   const agents = agentIds.slice();
@@ -197,14 +224,16 @@ export function armSchedulers(
   // Awake-replay tick: every 30 min (matches the old cron cadence).
   const replay = setInterval(() => {
     for (const agentId of agents) {
-      void core.awakeReplayTick(agentId, config, log).catch((err) => {
+      void core.awakeReplayTick(agentId, configFor(config, agentId), log).catch((err) => {
         log.warn(logFields({ agentId, op: "awake_replay.tick", outcome: "error", error: String(err) }));
       });
     }
   }, REPLAY_INTERVAL_MS);
+  replay.unref?.();
 
   // Hourly extraction harvest. LLM consolidation is host-cron only (Graft B).
   const harvest = setInterval(() => runHarvestTick(agents, config, log), HARVEST_INTERVAL_MS);
+  harvest.unref?.();
 
   // In-process embedding sweep (T3.5): every 10 min, requeue orphan nodes.
   const sweep = setInterval(() => {
@@ -215,7 +244,7 @@ export function armSchedulers(
           log.info(logFields({ agentId, op: "embedding.sweep", outcome: "ok", requeued: n }));
         }
         // Drain opportunistically (returns immediately if a drain is in flight).
-        void core.drainEmbeddingQueue(agentId, config, log).catch(() => {
+        void core.drainEmbeddingQueue(agentId, configFor(config, agentId), log).catch(() => {
           /* logged inside drain */
         });
       } catch (err) {
@@ -223,6 +252,7 @@ export function armSchedulers(
       }
     }
   }, SWEEP_INTERVAL_MS);
+  sweep.unref?.();
 
   log.info(logFields({
     op: "sleep_system",

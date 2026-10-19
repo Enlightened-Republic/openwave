@@ -22,6 +22,7 @@ import { capImportance, classifyOrigin, readOwnerAllowFrom } from "../provenance
 import { CONSOLIDATION_CRON_ID, type CronService } from "../engram-graft.js";
 import { RemoteBrainClient, RemoteBrainError, checkHealth } from "./client.js";
 import { BRAIN_TOOL_OUTPUT_SCHEMA, brainToolResult } from "../tool-result.js";
+import { RESET_REFUSED_TEXT, RESET_TOOL, agentResetAllowed } from "../reset-guard.js";
 import {
   loadToken,
   redact,
@@ -52,7 +53,7 @@ export const REMOTE_DISABLED_FEATURES: readonly string[] = [
   "VALOR injection scoring",
   "subconscious tick (agent_end) and compaction graph handling (after_compaction; only the compaction marker episode is appended)",
   "temporal before/after edges from LLM extraction",
-  "tools not served by the service: brain_update_self_model, brain_reflect, brain_generate_skill, brain_workspace, brain_docs",
+  "tools not served by the service: brain_update_self_model, brain_generate_skill, brain_workspace, brain_docs",
 ];
 
 /** Optional service tool used for episode writes (sharpwave-server >= engram/server-episode-append). Internal plumbing: not exposed to the model. */
@@ -279,7 +280,7 @@ export type RemoteRuntime = {
 
 export function registerRemoteMode(
   api: Api,
-  config: RemoteConfigFields & core.BrainConfig & Omit<AutoAgentsConfig, "agents"> & { agents: AgentsSpec; skipSystemTurns?: boolean; systemTurnPatterns?: string[] },
+  config: RemoteConfigFields & core.BrainConfig & Omit<AutoAgentsConfig, "agents"> & { agents: AgentsSpec; skipSystemTurns?: boolean; systemTurnPatterns?: string[]; allowAgentReset?: boolean },
   log: Log,
   helpers: RemoteHelpers,
 ): RemoteRuntime {
@@ -465,6 +466,7 @@ export function registerRemoteMode(
         async execute(_toolCallId: string, params: Record<string, unknown> | undefined) {
           const who = helpers.resolveToolAgent(toolContext);
           if ("error" in who) return brainToolResult(who.error, { isError: true });
+          if (name === RESET_TOOL && !agentResetAllowed(config)) return brainToolResult(RESET_REFUSED_TEXT, { isError: true });
           await ensureAgent(who.agentId);
           const conn = conns.get(who.agentId);
           if (!conn?.client) return brainToolResult(`openwave (remote mode): no brain service connection for agent "${who.agentId}": ${conn?.lastError ?? "not configured"}`, { isError: true });
@@ -498,8 +500,10 @@ export function registerRemoteMode(
   try {
     api.registerMemoryCorpusSupplement?.({
       async search(params: { query: string; maxResults?: number; agentSessionKey?: string }) {
-        const agentId = core.agentIdFromKey(params.agentSessionKey ?? "", roster.ids());
-        if (!served(agentId)) return [];
+        // Same rule as the tools: an unidentifiable caller is refused, never routed to the first agent.
+        const who = helpers.resolveToolAgent({ sessionKey: params.agentSessionKey });
+        if ("error" in who) return [];
+        const agentId = who.agentId;
         await ensureAgent(agentId);
         const r = await call(agentId, "memoryCorpusSupplement.search", "brain_query", {
           query: params.query, limit: params.maxResults ?? 5, format: "json", scope: settings.sharedRecall ? "all" : "private",
@@ -551,7 +555,11 @@ export function registerRemoteMode(
     if (hit && Date.now() - hit.at < STATUS_TTL_MS) return hit.footer;
     let footer = "";
     const r = await call(agentId, "before_prompt_build.status", "brain_status", { format: "json", visibility: "private" });
-    if (r && !r.isError) {
+    // Transport failure: no footer this turn and nothing cached, so a short
+    // outage does not hide the footer for STATUS_TTL_MS after recovery. A tool
+    // error (older service without brain_status) is cached like a result.
+    if (!r) return "";
+    if (!r.isError) {
       try {
         const body = JSON.parse(r.text) as { brains?: Array<{ attention?: string[] }> };
         const attention = (body.brains ?? []).flatMap((b) => b.attention ?? []);
@@ -579,18 +587,32 @@ export function registerRemoteMode(
   };
 
   // ── Extraction → service ──────────────────────────────────────────────────
+  // Facts the LLM already extracted are not dropped when the service is down
+  // mid-batch: the rest of the batch waits in memory (bounded) for the next
+  // harvest (hourly / session_end). They are lost only if the process ends first.
+  type ExtractedFact = Awaited<ReturnType<typeof core.drainExtractionQueue>>[number];
+  const PENDING_FACTS_MAX = 500;
+  const pendingFacts = new Map<string, ExtractedFact[]>();
   const harvesting = new Set<string>();
   const harvestToService = async (agentId: string, opPrefix: string): Promise<number> => {
     if (harvesting.has(agentId)) return 0;
     harvesting.add(agentId);
     let written = 0;
     try {
-      const facts = await core.drainExtractionQueue(agentId, config, log);
-      for (const fact of facts) {
+      const drained = await core.drainExtractionQueue(agentId, config, log);
+      const facts: ExtractedFact[] = [...(pendingFacts.get(agentId) ?? []), ...drained];
+      pendingFacts.delete(agentId);
+      for (let i = 0; i < facts.length; i++) {
+        const fact = facts[i]!;
         const r = await call(agentId, `${opPrefix}.extraction_write`, "brain_write", {
           type: fact.type, label: fact.label, content: fact.content, importance: fact.importance,
         });
-        if (!r) break; // service down: stop (the remaining facts are dropped, as a failed local harvest would)
+        if (!r) {
+          const rest = facts.slice(i).slice(-PENDING_FACTS_MAX);
+          pendingFacts.set(agentId, rest);
+          log.warn(logFields({ agentId, op: `${opPrefix}.extraction_write`, outcome: "deferred", count: rest.length, note: "brain service unavailable; facts kept for the next harvest" }));
+          break;
+        }
         if (r.isError) log.warn(logFields({ agentId, op: `${opPrefix}.extraction_write`, outcome: "rejected", error: r.text.slice(0, 200) }));
         else written++;
       }
@@ -819,26 +841,47 @@ export function registerRemoteMode(
         }
       }
 
-      await ensureAgent(agentId);
+      // One budget for the whole hook. ensureAgent can take longer than one
+      // call (provisioning), so it is raced against the per-call budget and
+      // carries on in the background when it loses. The service calls below
+      // (recall, goals, status footer) run in PARALLEL: sequentially they could
+      // take three times remoteTimeoutMs and blow the hook's own timeout
+      // (remoteTimeoutMs + 1s), which fails open: no memory for that turn
+      // while the calls kept running.
+      await Promise.race([
+        ensureAgent(agentId),
+        new Promise<void>((res) => { const t = setTimeout(res, settings.timeoutMs); t.unref?.(); }),
+      ]);
       const conn = conns.get(agentId);
       if (!conn?.client) {
         return surface === "voice" ? undefined : { appendSystemContext: REMOTE_DOWN_NOTICE };
       }
+      const wantRecall = query.length >= 3;
+      // Xanima 0.2.0: alignment note (offered; acked after a real reply) + goal triggers from the service.
+      const wantGoals = surface !== "voice" && !(config.intentDriftCheck === "off" && config.goalTriggers === false) && !turnContextUnsupported.has(agentId);
+      const wantStatus = surface !== "voice" && config.selfStatus !== false;
+      const [r, g, footer] = await Promise.all([
+        wantRecall
+          ? call(agentId, "before_prompt_build.recall", "brain_query", {
+            query: query.slice(0, 2000),
+            limit: config.recallTopK ?? 10,
+            format: "json",
+            scope: settings.sharedRecall ? "all" : "private",
+            // 0.5.0: this is the once-per-turn injection recall — the service adds subscribed room items and applies
+            // brain_focus / injection categories / sensitivity (older services ignore the flag).
+            inject: true,
+          })
+          : Promise.resolve(undefined),
+        wantGoals ? call(agentId, "before_prompt_build.goals", TURN_CONTEXT_TOOL, { query: query.slice(0, 2000) }) : Promise.resolve(undefined),
+        wantStatus ? statusFooterFor(agentId) : Promise.resolve(""),
+      ]);
+
       let block = "";
       let down = false;
-      if (query && query.length >= 3) {
-        const r = await call(agentId, "before_prompt_build.recall", "brain_query", {
-          query: query.slice(0, 2000),
-          limit: config.recallTopK ?? 10,
-          format: "json",
-          scope: settings.sharedRecall ? "all" : "private",
-          // 0.5.0: this is the once-per-turn injection recall — the service adds subscribed room items and applies
-          // brain_focus / injection categories / sensitivity (older services ignore the flag).
-          inject: true,
-        });
-        if (!r) down = true;
-        else if (r.isError) log.debug?.(logFields({ agentId, op: "before_prompt_build.recall", outcome: "tool_error", error: r.text.slice(0, 200) }));
-        else block = formatRecallBlock(parseQueryJson(r.text), surface, helpers.contextOptsFor(agentId).externalMemoryActive, {
+      if (wantRecall) {
+        if (r === null) down = true;
+        else if (r?.isError) log.debug?.(logFields({ agentId, op: "before_prompt_build.recall", outcome: "tool_error", error: r.text.slice(0, 200) }));
+        else if (r) block = formatRecallBlock(parseQueryJson(r.text), surface, helpers.contextOptsFor(agentId).externalMemoryActive, {
           relativeTime: config.relativeTimeLabels !== false,
           beliefMetadata: config.beliefMetadata !== false,
           lowThreshold: config.lowConfidenceThreshold,
@@ -847,11 +890,9 @@ export function registerRemoteMode(
         down = true;
       }
 
-      // Xanima 0.2.0: alignment note (offered; acked after a real reply) + goal triggers from the service.
       let goalsBlock = "";
-      if (!down && surface !== "voice" && !(config.intentDriftCheck === "off" && config.goalTriggers === false) && !turnContextUnsupported.has(agentId)) {
-        const g = await call(agentId, "before_prompt_build.goals", TURN_CONTEXT_TOOL, { query: (query ?? "").slice(0, 2000) });
-        if (g && !g.isError) {
+      if (!down && g) {
+        if (!g.isError) {
           try {
             const parsed = JSON.parse(g.text) as { text?: string; noteId?: number | null; noteIds?: number[]; identity?: string; activeGoals?: string[] };
             goalsBlock = String(parsed.text ?? "");
@@ -869,7 +910,7 @@ export function registerRemoteMode(
             }
             alignmentAcks.offer(agentId, Array.isArray(parsed.noteIds) ? parsed.noteIds : parsed.noteId);
           } catch { /* ignore */ }
-        } else if (g?.isError && /unknown tool/i.test(g.text)) {
+        } else if (/unknown tool/i.test(g.text)) {
           turnContextUnsupported.add(agentId); // older service: stop asking
         }
       }
@@ -877,10 +918,7 @@ export function registerRemoteMode(
 
       const result: { appendSystemContext?: string; prependContext?: string } = {};
       if (surface !== "voice") result.appendSystemContext = down ? REMOTE_DOWN_NOTICE : REMOTE_BANNER;
-      if (!down && surface !== "voice" && config.selfStatus !== false) {
-        const footer = await statusFooterFor(agentId);
-        if (footer) result.appendSystemContext = `${result.appendSystemContext}\n${footer}`;
-      }
+      if (!down && surface !== "voice" && footer) result.appendSystemContext = `${result.appendSystemContext}\n${footer}`;
       if (block) result.prependContext = block;
       log.debug?.(logFields({ agentId, op: "before_prompt_build", outcome: down ? "degraded" : "ok", brainMode: "remote", durationMs: Date.now() - t0, prependChars: block.length }));
       if (!result.appendSystemContext && !result.prependContext) return;

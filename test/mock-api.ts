@@ -10,6 +10,8 @@ export type Recorded = {
   injections: any[];
   lifecycles: any[];
   sessionActions: Map<string, { id: string; description?: string; schema?: unknown; requiredScopes?: string[]; handler: (ctx: any) => any }>;
+  /** registerMemoryCorpusSupplement registrations ({ search, get }). */
+  corpus: any[];
 };
 
 export type MockApiOptions = {
@@ -24,7 +26,7 @@ export type MockApiOptions = {
 };
 
 export function makeMockApi(pluginConfig: Record<string, unknown>, opts: MockApiOptions = {}) {
-  const rec: Recorded = { hooks: new Map(), tools: [], injections: [], lifecycles: [], sessionActions: new Map() };
+  const rec: Recorded = { hooks: new Map(), tools: [], injections: [], lifecycles: [], sessionActions: new Map(), corpus: [] };
   const withSessionControls = opts.withSessionControls ?? true;
   const withConfigMutation = opts.withConfigMutation ?? true;
   const configFile: Record<string, any> = opts.configFile ?? {};
@@ -70,7 +72,7 @@ export function makeMockApi(pluginConfig: Record<string, unknown>, opts: MockApi
     registerTool(t: any) { rec.tools.push(t); },
     registerMemoryEmbeddingProvider() {},
     registerMemoryPromptSupplement() {},
-    registerMemoryCorpusSupplement() {},
+    registerMemoryCorpusSupplement(s: any) { rec.corpus.push(s); },
     on(name: string, handler: (e: any, c: any) => any) {
       if (!rec.hooks.has(name)) rec.hooks.set(name, []);
       rec.hooks.get(name)!.push(handler);

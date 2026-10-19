@@ -179,10 +179,11 @@ manifest defaults and passed straight into the engine.
 | `systemTurnPatterns` | `string[]` | `[]` | Extra case-insensitive regexes; a turn whose trimmed text matches is skipped like a system turn. Invalid entries are ignored (warned once). |
 | `ingestionModel` | `string` | `"openrouter/deepseek/deepseek-v4-flash"` | Model for LLM fact extraction and generative REM. `openrouter/provider/model` or bare `provider/model` both work. |
 | `openRouterApiKey` | `string` | `$OPENROUTER_API_KEY` / `$XANIMA_OPENROUTER_API_KEY` / `""` | OpenRouter key for engine LLM calls. Empty → extraction and generative-REM degrade to heuristic mode (non-fatal). Prefer the env var over putting the key in `openclaw.json`. |
-| `consolidationCron` | `string` | `"30 4 * * *"` | Host cron expression for the `openwave:consolidation` job (LLM consolidation), staggered after memory-core dreaming. |
-| `consolidationCronEnabled` | `boolean` | `true` | Register the consolidation host cron on `gateway_start`. |
+| `consolidationCron` | `string` | `"30 4 * * *"` | Host cron expression for the `openwave:consolidation` job (LLM consolidation), staggered after memory-core dreaming. The job never wakes the agent; see [Sleep system](#sleep-system-and-the-consolidation-cron). |
+| `consolidationCronEnabled` | `boolean` | `true` | Register the consolidation host cron on `gateway_start` (the in-process timers run either way). |
 | `curatedTierDedupe` | `boolean` | `true` | When `MEMORY.md` / `USER.md` is present, tell the engine so durable identity/goals are not double-injected. |
-| `personaOverrides` | `object` | `{}` | Per-agent-id overrides of the numeric tunables below, keyed by OpenClaw agent id. Missing keys inherit the flat value. |
+| `personaOverrides` | `object` | `{}` | Per-agent-id overrides of the numeric tunables below, keyed by OpenClaw agent id; written by the Control UI page and applied on every local-mode engine call. Missing keys inherit the flat value. See [Persona overrides](#persona-overrides-control-ui). |
+| `allowAgentReset` | `boolean` | `false` | Let the agent call `brain_reset` on its own brain. Off by default: the engine's only guard is `confirm` = the agent's own id, which it knows, so a prompt injection could wipe the brain. Local and remote. |
 
 Engine (`BrainConfig`) fields you can also override, passed through to
 `xanima-core` (defaults from `core.DEFAULT_CONFIG`):
@@ -234,8 +235,27 @@ from the service's `config.json` `brain` block instead).
 - **Identity (0.5.0):** `identity` (`selfEdit`, `refuseUntrusted`,
   `saveRefusedAsNote`, `locked`, `maxChangesPerDay`, `maxChars`,
   `requireAttestation`), `identityMirror`, `identityTrustedTools`.
+- **Soul Package (0.4.0):** `soulExportProfile` (`compact` | `full`),
+  `soulTokenBudget`, `soulMinFactConfidence`, `soulImportConfidence`,
+  `soulMergeApplyTheirs`, `soulPackageOnExport`.
+- **Rooms (0.5.0):** `rooms`, `roomRecallMax`.
 
 The behaviour behind each group is described under [Tools](#tools).
+
+### Persona overrides (Control UI)
+
+The plugin registers a Control UI page ("Xanima", shown once Settings → Labs →
+Custom plugin UI is on) and four session actions (`getPersonaConfig`,
+`setPersonaOverride`, `clearPersonaOverride`, `getBrainConnection`). The page
+writes `plugins.entries.xanima.config.personaOverrides.<agentId>` through the
+host's config mutation API. The numeric fields (`contextBudget`,
+`workingMemorySlots`, `spreadingActivationHops`, `activationThreshold`,
+`inhibitionStrength`, `efDefault`, `retrievabilityFloor`,
+`consolidationTimeGateHours`, `consolidationEpisodeGate`, `pruneAfterDays`)
+are laid over the flat config for that agent on every local-mode engine call:
+hooks, tools and the sleep timers. `emotionalProfile` is accepted and stored
+but has no engine field yet. In remote mode the engine runs on the brain
+service, so persona overrides have no effect there.
 
 ### System turns
 
@@ -267,6 +287,40 @@ selects episodes by importance only, so a tagged episode would still be
 consolidated unless every consumer learned the tag. Isolated automation (`cron`)
 turns are not skipped; they keep the existing importance clamp (0.1, below
 extraction). Normal turns that merely mention heartbeats are kept.
+
+---
+
+## Sleep system and the consolidation cron
+
+Local mode runs three in-process timers, armed on `gateway_start` and released
+on `gateway_stop` and on every lifecycle cleanup: awake replay every 30 min,
+extraction harvest every 60 min, embedding sweep every 10 min. If a lifecycle
+`restart` cleanup released them and no `gateway_start` followed (a plugin
+generation sharing this module instance), the next turn re-arms them and logs
+`{"op":"sleep_system","outcome":"rearmed"}`.
+
+LLM consolidation runs from the host cron job `openwave:consolidation`
+(`consolidationCron`, default 04:30, staggered after memory-core dreaming at
+03:00). The job is a main-session `systemEvent` with `wakeMode:
+"next-heartbeat"`: it **never starts an agent turn**; it only ticks
+`cron_changed`, and the plugin runs the pass in-process when that event says
+the job **finished** with status **ok**. A job left behind by an older version
+with `wakeMode: "now"` (which made OpenClaw wake the agent every night) is
+switched in place on the next `gateway_start`.
+
+What to look for in the gateway log:
+
+```
+[xanima] {"op":"cron.consolidation","outcome":"registered"|"exists"|"updated",...}
+[xanima] {"op":"cron_changed","jobName":"openwave:consolidation","action":"finished","status":"ok",...}
+[xanima] {"op":"sleep_system.tick","trigger":"host_cron","outcome":"ok","consolidate":true|false,...}
+[xanima] {"op":"extraction.tick","outcome":"ok",...}        every hour
+```
+
+`consolidate` is `false` while the gate is closed (fewer than
+`consolidationEpisodeGate` new episodes or less than
+`consolidationTimeGateHours` since the last pass). Remote mode registers no
+cron and no timers: the brain service owns sleep.
 
 ---
 
@@ -310,7 +364,7 @@ run `node packages/server/dist/cli.js serve`; it listens on `127.0.0.1:18790`.
 | `$XANIMA_BRAIN_TOKEN` | — | Used when `brainTokenFile` is unset (single agent only). `$OPENWAVE_BRAIN_TOKEN` is still read, with a warning. |
 | `brainToken` | — | Inline token (discouraged: it lands in `openclaw.json`). Single agent only. |
 | `sharedRecall` | `true` | Per-turn recall also searches the shared brain; shared hits are tagged `[type·shared]`. |
-| `remoteTimeoutMs` | `2500` | Per-call budget. A slow/dead service costs a turn at most this, then the client backs off (2s → 60s) and fails fast. |
+| `remoteTimeoutMs` | `2500` | Per-call budget, and the budget for the per-turn hook as a whole: recall, the goals block and the status footer are requested in parallel. A slow/dead service costs a turn at most this, then the client backs off (2s → 60s) and fails fast. |
 
 The token is never logged; only its source (`file`/`env`/`inline`) is. A rejected
 token logs an `error` line containing `BAD BRAIN TOKEN` and the `getBrainConnection`
@@ -325,7 +379,8 @@ dedupe (identity/goal hits dropped when `MEMORY.md` / `USER.md` is curated); a
 `[BRAIN: goals]` block fed by the service's `brain_turn_context`; episode writes
 via `brain_episode_append` (feature-detected from the service's tool list; every
 `xanima-server` release advertises it); LLM-extraction facts written to the
-service on `session_end` and hourly; the memory-corpus supplement.
+service on `session_end` and hourly (a batch interrupted by an outage waits in
+memory for the next harvest); the memory-corpus supplement.
 
 **Disabled in remote mode** (no service equivalent yet): the local brain.db,
 in-process sleep timers (awake replay, hourly harvest-to-local, embedding
@@ -334,9 +389,10 @@ the session bootstrap block, identity/goals/neuro header lines (a one-line
 `[Xanima remote]` banner is injected instead), the procedural-rules block, the
 last-24h activity block, proactive monitor / working memory / coactivations /
 dopamine, VALOR scoring, subconscious tick, compaction graph handling (only the
-compaction marker episode is appended), temporal edges from extraction, and the
-four local-only tools `brain_update_self_model`, `brain_generate_skill`,
-`brain_workspace`, `brain_docs`.
+compaction marker episode is appended), temporal edges from extraction, persona
+overrides (the engine runs on the service), and the four local-only tools
+`brain_update_self_model`, `brain_generate_skill`, `brain_workspace`,
+`brain_docs`.
 
 ### Automatic agents and provisioning (remote mode)
 
@@ -420,11 +476,15 @@ one overdue-commitment nudge and one relevant open question. `brain_plan` parks
 and resumes work with a briefing; `brain_briefing`, `brain_changes` and
 `brain_conflicts` are the meta-tools for "what changed / what disagrees".
 
-**`brain_reset` is agent-callable** — an agent can wipe its own brain by calling
-it with `confirm` set to exactly its own agent id. Guarded: `confirm` must match
-the agent id, and a timestamped `.db` backup is taken first. The wipe is
+**`brain_reset` is refused unless `allowAgentReset: true`.** With it on, an
+agent can wipe its own brain by calling the tool with `confirm` set to exactly
+its own agent id; a timestamped `.db` backup is taken first, and the wipe is
 `DELETE FROM` on learned-state tables plus a re-seed of an empty self-model —
 never `DROP` — so embedding config and vector-table dimension are preserved.
+It is off by default because the agent knows its own id, so that guard alone
+does not stop a prompt injection. The tool stays registered and answers with a
+clear refusal (local and remote); operators reset with the `xanima-server` CLI
+or the `xanima` MCP server.
 
 **Soul Package (0.4.0).** `brain_export_soul` exports the agent's **own** brain as a
 portable `xanima-soul/1` package (identity, values, goals with history, top skills,
@@ -506,18 +566,60 @@ Same brain db, same schema, no migration in either direction.
 ## Development
 
 ```bash
+nvm use                # Node 24 (.nvmrc); the openclaw dev dependency needs >= 24.16
 npm ci                 # lockfile install; xanima-core 0.5.0 comes from vendor/xanima-core-0.5.0.tgz
-npm run build          # esbuild → dist/index.js (single file, xanima-core inlined) + dist/upgrade.js
+                       # (package.json allowScripts lets npm 11 build the native modules)
 npm run typecheck
 npm test               # vitest — mock-api hook harness, local and remote
+npm run build          # esbuild → dist/index.js (single file, xanima-core inlined), dist/upgrade.js, dist/control-ui/<hash>/
 ```
 
+`npm run build` rewrites the `controlUi` entry in `openclaw.plugin.json` with
+the content hash of the UI bundle; commit that change together with the source
+change. CI (`.github/workflows/ci.yml`) runs typecheck, tests and the build on
+Node 24 and fails if the committed hash is stale.
+
 The engine (`xanima-core`) is bundled into `dist/index.js` at build time. To
-pick up engine changes, drop a new tarball into `vendor/` and point the
-`xanima-core` devDependency at it.
+pick up engine changes, drop a new tarball into `vendor/` (tracked although
+`*.tgz` is ignored) and point the `xanima-core` devDependency at it.
+
+### Remote-mode tests
+
+The suites under `test/remote/` (and the remote half of
+`test/identity-provenance.test.ts`) start a **real** `xanima-server` child
+process. They skip with a warning unless `SHARPWAVE_SERVER_CLI` (or
+`XANIMA_SERVER_CLI`) points at a built server; set
+`OPENWAVE_REQUIRE_REMOTE_TESTS=1` to make that a failure. Build it from the
+xanima repo (formerly sharpwave):
+
+```bash
+git clone https://github.com/Enlightened-Republic/sharpwave ../sharpwave
+cd ../sharpwave
+printf 'allow-scripts=better-sqlite3,sqlite-vec,esbuild\n' > .npmrc   # npm >= 11
+npm ci
+npm run build --workspace xanima-core
+npm run build --workspace xanima-server
+cd -
+SHARPWAVE_SERVER_CLI=../sharpwave/packages/server/dist/cli.js npm test
+```
+
+The default location is `../sharpwave/packages/server/dist/cli.js` next to
+this checkout. CI does not build the server, so the remote suites skip there.
 
 ## Release notes
 
+- **Unreleased (audit fixes)** — the `openwave:consolidation` cron no longer
+  wakes the agent (`wakeMode: "next-heartbeat"`; a leftover `"now"` job is
+  switched in place) and the in-process pass runs once, on the job's
+  finished-ok event; Control UI persona overrides are applied to every
+  local-mode engine call (they were persisted but never read); `brain_reset`
+  is refused unless `allowAgentReset`; the remote per-turn hook requests
+  recall, goals and status in parallel under one `remoteTimeoutMs`; extracted
+  facts survive a service outage; a lifecycle `restart` no longer re-injects a
+  live session's bootstrap and the sleep timers re-arm if no `gateway_start`
+  follows; the memory corpus supplement refuses unidentifiable callers;
+  `allowAgentReset`, `rooms`, `roomRecallMax` and the `soul*` settings are in
+  the manifest; CI workflow, `.nvmrc`, `engines`, `allowScripts`.
 - **0.5.0** — shared rooms on the brain service (`brain_room`, `brain_publish`,
   `brain_unpublish`, `brain_room_query`, `brain_subscribe`), `brain_focus` and
   injection categories, the poisoning quarantine, and `brain_identity` with

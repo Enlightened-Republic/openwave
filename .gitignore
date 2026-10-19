@@ -2,6 +2,8 @@ node_modules/
 dist/
 *.log
 *.tgz
+# The engine is vendored as a tarball (package.json: file:vendor/...); keep it tracked.
+!vendor/*.tgz
 *.tsbuildinfo
 .DS_Store
 .env

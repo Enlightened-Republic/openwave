@@ -1,16 +1,14 @@
-// Openwave's Control UI settings page: a real sidebar page (not a session
+// Xanima's Control UI settings page: a real sidebar page (not a session
 // dashboard widget) that reads/writes the per-agent persona overrides
-// described in settings-contract.ts. Built separately from dist/index.js by
-// `openclaw plugins build` (docs/plugins/feature-plugins.md "Build and
-// reload") -- this file is never bundled into openwave's own backend build.
+// described in settings-contract.ts. Built by esbuild.mjs into
+// dist/control-ui/<hash>/index.js and declared in openclaw.plugin.json
+// (`controlUi`); this file is never bundled into the backend build. Do NOT
+// use `openclaw plugins build` for it (see the note in esbuild.mjs).
 //
 // Only renders once an operator has enabled Settings -> Labs -> Custom
-// plugin UI (openwave is a locally-installed plugin, not bundled), and only
-// while openwave is actually installed and enabled -- neither of which is
-// true on this machine right now (openwave is deliberately out of
-// openclaw.json pending the memory-slot work). This is scaffolding to build
-// and typecheck against today; wiring it back into a live gateway is a
-// separate, later step.
+// plugin UI (xanima is a locally-installed plugin, not bundled), and only
+// while xanima is installed and enabled. The overrides it writes are applied
+// per agent by src/index.ts (`configFor`) on every engine call in local mode.
 
 import { defineControlUiPlugin, type ControlUiHost, type ControlUiView } from "openclaw/plugin-sdk/control-ui";
 import { createFeatureClient, defineFeatureContract } from "openclaw/plugin-sdk/feature-contract";
@@ -65,7 +63,7 @@ const mountSettingsPage: ControlUiView = (container, context) => {
   root.style.gap = "12px";
 
   const heading = el("h2");
-  heading.textContent = "Openwave — persona overrides";
+  heading.textContent = "Xanima: persona overrides";
   const subheading = el("p");
   subheading.textContent =
     "Per-agent tuning layered over xanima's flat plugin config. Missing fields inherit the flat default.";
@@ -246,12 +244,12 @@ export default defineControlUiPlugin({
   activate(host) {
     const disposePage = host.ui.registerPage({
       id: "xanima-settings",
-      label: "Openwave",
+      label: "Xanima",
       mount: mountSettingsPage,
     });
     const disposeNav = host.ui.registerNavigation({
       id: "xanima-settings-nav",
-      label: "Openwave",
+      label: "Xanima",
       page: { id: "xanima-settings" },
       icon: "brain",
     });

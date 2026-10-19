@@ -16,6 +16,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 import plugin, { __remoteRuntimeForTests } from "../../src/index.js";
 import { EPISODE_APPEND_TOOL, RECALL_BLOCK_HEADER, REMOTE_TOOL_NAMES, TURN_CONTEXT_TOOL } from "../../src/remote/register.js";
+import { RESET_REFUSED_TEXT } from "../../src/reset-guard.js";
 import { BRAIN_TOOL_OUTPUT_SCHEMA } from "../../src/tool-result.js";
 import { makeMockApi } from "../mock-api.js";
 import { assertPlainJson, directText, projectToolResultValue } from "../openclaw-projection.js";
@@ -40,7 +41,11 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
   let token: string;
   let tools: Map<string, Tool>;
   let mock: ReturnType<typeof makeMockApi>;
+  let runtime: ReturnType<typeof __remoteRuntimeForTests>;
+  const extraStops: Array<() => Promise<void>> = [];
   const ids: string[] = [];
+  // Build the tools exactly like OpenClaw does for one run: factory(toolContext).
+  const ctx = { agentId: AGENT, sessionKey: `agent:${AGENT}:main`, sessionId: "s-main" };
 
   beforeAll(async () => {
     svc = await startServer();
@@ -48,8 +53,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
     svc.writeTokenFile(AGENT, token);
     mock = makeMockApi({ enabled: true, config: { agents: [AGENT], brainMode: "remote", brainUrl: svc.url, brainTokenFile: join(svc.tokenDir, "{agentId}.token") } });
     plugin.register(mock.api as never);
-    // Build the tools exactly like OpenClaw does for one run: factory(toolContext).
-    const ctx = { agentId: AGENT, sessionKey: `agent:${AGENT}:main`, sessionId: "s-main" };
+    runtime = __remoteRuntimeForTests();
     tools = new Map(mock.rec.tools.map((f: (c: unknown) => Tool) => f(ctx)).map((t: Tool) => [t.name, t]));
     for (const m of HAILEY) {
       const r = await tools.get("brain_write")!.execute("w", { type: "semantic", ...m });
@@ -60,7 +64,8 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
   }, 30_000);
 
   afterAll(async () => {
-    await __remoteRuntimeForTests()?.stop();
+    for (const s of extraStops) await s().catch(() => {});
+    await runtime?.stop();
     await svc?.stop();
   });
 
@@ -109,10 +114,22 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
   });
 
   test("tool-level errors: text reaches the model and details.error marks the call failed", async () => {
+    // brain_reset is refused by the plugin itself (reset-guard.ts) unless allowAgentReset is on; the service is never asked.
     const { r, codeMode } = await run("brain_reset", { confirm: AGENT });
     expectShape(r, codeMode);
-    expect(codeMode.text).toContain("brain_reset is disabled");
+    expect(codeMode.text).toBe(RESET_REFUSED_TEXT);
     expect(codeMode.error).toBe(codeMode.text);
+    // With allowAgentReset the call reaches the service, whose own answer (reset is disabled on this service) is a tool-level error.
+    const allowed = makeMockApi({ enabled: true, config: { agents: [AGENT], brainMode: "remote", brainUrl: svc.url, brainTokenFile: join(svc.tokenDir, "{agentId}.token"), allowAgentReset: true } });
+    plugin.register(allowed.api as never);
+    const rt = __remoteRuntimeForTests();
+    extraStops.push(() => rt!.stop());
+    const reset = allowed.rec.tools.map((f: (c: unknown) => Tool) => f(ctx)).find((t: Tool) => t.name === "brain_reset")!;
+    const r2 = await reset.execute("call-reset-allowed", { confirm: AGENT });
+    const cm2 = projectToolResultValue(r2) as Details;
+    expectShape(r2, cm2);
+    expect(cm2.text).toContain("brain_reset is disabled");
+    expect(cm2.error).toBe(cm2.text);
     const bad = await run("brain_query", {});
     expectShape(bad.r, bad.codeMode);
     expect(bad.codeMode.error).toContain("query");
@@ -153,7 +170,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       ["brain_forget_impact", { query: "birthday dinner" }, /dry run — nothing changed/],
       ["brain_retract", { node_id: c, reason: "test retraction" }, /Retracted/],
       ["brain_forget", { node_id: c, force: true }, /./],
-      ["brain_reset", { confirm: AGENT }, /disabled/],
+      ["brain_reset", { confirm: AGENT }, /^refused: brain_reset is not available to the agent/],
       // 0.5.0 rooms + focus (this token has no room-admin scope and no rooms: shape + clean errors)
       ["brain_room", { action: "list" }, /No named rooms/],
       ["brain_publish", { room: "team", node_ids: [a] }, /room team not found/],

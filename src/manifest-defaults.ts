@@ -5,6 +5,7 @@ export const MANIFEST_CONFIG_DEFAULTS: Record<string, unknown> = {
   "agents": [
     "main"
   ],
+  "allowAgentReset": false,
   "contextBudget": 2000,
   "workingMemorySlots": 7,
   "spreadingActivationHops": 1,
@@ -52,6 +53,12 @@ export const MANIFEST_CONFIG_DEFAULTS: Record<string, unknown> = {
   "intentDriftCheck": "sleep",
   "driftDays": 7,
   "goalTriggers": true,
+  "soulExportProfile": "compact",
+  "soulTokenBudget": 2000,
+  "soulMinFactConfidence": 0.6,
+  "soulImportConfidence": 0.5,
+  "soulMergeApplyTheirs": true,
+  "soulPackageOnExport": false,
   "alignmentNoteMaxTokens": 60,
   "decisionDraftTtlDays": 14,
   "lessonMergeSimilarity": 0.86,
@@ -66,6 +73,8 @@ export const MANIFEST_CONFIG_DEFAULTS: Record<string, unknown> = {
   "metaToolMaxChars": 2400,
   "quarantine": "log",
   "focusDefaultTtl": 3,
+  "rooms": true,
+  "roomRecallMax": 3,
   "identityMirror": false,
   "identityTrustedTools": []
 };

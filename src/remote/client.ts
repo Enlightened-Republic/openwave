@@ -124,6 +124,10 @@ export class RemoteBrainClient {
   private noteFailure(e: RemoteBrainError): void {
     this.lastError = e;
     if (e.kind === "unreachable") {
+      // Calls that were already in flight when the first one failed (the
+      // per-turn recall / goals / status run in parallel) report the same
+      // outage; they must not escalate the backoff as if it were three outages.
+      if (this.now() < this.downUntil) return;
       this.failures++;
       const wait = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** Math.min(this.failures - 1, 10));
       this.downUntil = this.now() + wait;

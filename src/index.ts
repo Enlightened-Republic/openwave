@@ -48,6 +48,7 @@ import { NoisePairTracker, classifySystemTurn, isHeartbeatSessionKey, resolveSys
 import { registerRemoteMode, type RemoteRuntime } from "./remote/register.js";
 import { AgentRoster, isDynamicAgents, type AutoAgentsConfig, type AgentsSpec } from "./remote/agents.js";
 import { BRAIN_TOOL_OUTPUT_SCHEMA, brainToolResult } from "./tool-result.js";
+import { RESET_REFUSED_TEXT, RESET_TOOL, agentResetAllowed } from "./reset-guard.js";
 import type { BrainConnectionInfo } from "./settings-contract.js";
 import { AlignmentAckTracker } from "./alignment-ack.js";
 import { IDENTITY_TOOL, sharedIdentityTracker, attestIdentityArgs, effectiveToolName, mirrorIdentityToWorkspace, removedFieldOf } from "./identity-provenance.js";
@@ -73,6 +74,8 @@ type OpenwaveConfig = core.BrainConfig & RemoteConfigFields & Omit<AutoAgentsCon
   identityMirror?: boolean;
   /** brain_identity: tools whose output does not make an identity change "tool_output" (default none). */
   identityTrustedTools?: string[];
+  /** Let the agent call brain_reset on its own brain (default false: see reset-guard.ts). */
+  allowAgentReset?: boolean;
   /** When true (default), omit host-curated durable identity/goals when MEMORY.md/USER.md present (Engram Graft A). */
   curatedTierDedupe?: boolean;
   /** Host cron expr for LLM consolidation (Engram Graft B). Default staggered after memory-core dreaming. */
@@ -94,6 +97,7 @@ const DEFAULT_OPENWAVE_CONFIG: OpenwaveConfig = {
   enabled: true,
   agents: ["main"],
   personaOverrides: {},
+  allowAgentReset: false,
   curatedTierDedupe: true,
   consolidationCron: "30 4 * * *",
   consolidationCronEnabled: true,
@@ -273,11 +277,14 @@ let warnedNoOwnerList = false;
 // drop their per-session state.
 const knownSessions = new Set<string>();
 
-// Tool-routing fix (ported from clawbrain-v4/src/tools.ts::sessionAgentMap,
-// 2026-05-21). brain_* tool calls arrive with a UUID-only `ctx.sessionKey` and
-// no `ctx.agentId`, so `agentIdFromKey` would silently route every one of them
-// to `config.agents[0]`. Hooks DO carry the agent, so they record the mapping
-// here and `resolveAgentId` consults it before falling back.
+// Session → agent map (ported from clawbrain-v4/src/tools.ts::sessionAgentMap,
+// 2026-05-21, when brain_* tool calls arrived with a UUID-only `ctx.sessionKey`
+// and no `ctx.agentId`). On OpenClaw 2026.9.8 the tool context carries
+// agentId, the full `agent:<id>:...` sessionKey and the sessionId (embedded-agent
+// tool context), so this is a fallback for older hosts and for paths that only
+// hand us a session id (memory corpus supplement). Hooks record the mapping
+// and `resolveAgentId` / `resolveToolAgent` consult it before giving up; nothing
+// falls back to `config.agents[0]` any more.
 //
 // This lives in openwave rather than core: core's `dispatchBrainTool` takes an
 // ALREADY-RESOLVED agentId — agent resolution is a transport concern.
@@ -422,6 +429,27 @@ function mergePersonaFields(base: PersonaOverrideFields, override: PersonaOverri
     merged.emotionalProfile = { ...base.emotionalProfile, ...override.emotionalProfile };
   }
   return merged;
+}
+
+/**
+ * The engine config for ONE agent: the flat config with that agent's persona
+ * override (Control UI, `personaOverrides.<agentId>`) laid over the numeric
+ * tunables. Every local-mode engine call goes through this, so a slider moved
+ * on the settings page changes retrieval / consolidation for that agent only.
+ * (Until 0.5.1 the overrides were persisted but never read on any engine path.)
+ * Returns the flat config object itself when the agent has no override.
+ * `emotionalProfile` is accepted and stored but has no engine field yet.
+ */
+export function applyPersonaOverrides(config: OpenwaveConfig, agentId: string): OpenwaveConfig {
+  const override = config.personaOverrides?.[agentId];
+  if (!override) return config;
+  const out: OpenwaveConfig = { ...config };
+  const slots = out as unknown as Record<string, number>;
+  for (const key of PERSONA_FIELD_KEYS) {
+    const v = override[key];
+    if (typeof v === "number" && Number.isFinite(v)) slots[key] = v;
+  }
+  return out;
 }
 
 // Registers the three settings-page session actions on the SAME plugin id
@@ -679,6 +707,9 @@ export default definePluginEntry({
     // `curatedTierDedupe: false` turns it off. See engram-graft.ts / memory-detection.ts.
     const contextOptsFor = (agentId: string): { externalMemoryActive: boolean } =>
       assemblyOptsFor(api, config, agentId, api.runtime?.config?.current?.());
+    // Per-agent engine config (persona overrides applied). Reads `config` live, so
+    // a setPersonaOverride in this process takes effect on the next engine call.
+    const configFor = (agentId: string): OpenwaveConfig => applyPersonaOverrides(config, agentId);
 
     // ─── Tools (16) ─────────────────────────────────────────────────────────────
     // Definitions and executors both come from core's unified tool module, so
@@ -759,7 +790,7 @@ export default definePluginEntry({
         const resolveWs = (api.runtime as { agent?: { resolveAgentWorkspaceDir?: (cfg: unknown, id: string) => string } } | undefined)?.agent?.resolveAgentWorkspaceDir;
         const dir = resolveWs?.(api.runtime?.config?.current?.(), agentId);
         if (!dir) return;
-        const g = await dispatchBrainTool(IDENTITY_TOOL, agentId, { action: "get", format: "json" }, config, "openwave");
+        const g = await dispatchBrainTool(IDENTITY_TOOL, agentId, { action: "get", format: "json" }, configFor(agentId), "openwave");
         if (g.isError) return;
         const changed = mirrorIdentityToWorkspace(dir, JSON.parse(g.text), removed);
         if (changed.length) log.info(logFields({ agentId, op: "identity.mirror", outcome: "ok", files: changed.join(",") }));
@@ -784,8 +815,9 @@ export default definePluginEntry({
           async execute(_toolCallId: string, params: Record<string, unknown> | undefined) {
             const who = resolveToolAgent(toolContext);
             if ("error" in who) return brainToolResult(who.error, { isError: true });
+            if (name === RESET_TOOL && !agentResetAllowed(config)) return brainToolResult(RESET_REFUSED_TEXT, { isError: true });
             const args = name === IDENTITY_TOOL ? attestIdentityArgs(params ?? {}, identityProv, provKey(toolContext)) : (params ?? {});
-            const r = await dispatchBrainTool(name, who.agentId, args, config, "openwave");
+            const r = await dispatchBrainTool(name, who.agentId, args, configFor(who.agentId), "openwave");
             if (!r.isError && name === IDENTITY_TOOL && config.identityMirror === true && ["add", "change", "remove"].includes(String(args["action"]))) void mirrorIdentityLocal(who.agentId, removedFieldOf(args));
             return brainToolResult(r.text, { isError: r.isError });
           },
@@ -854,13 +886,20 @@ export default definePluginEntry({
           // ReferenceError (esbuild does not typecheck).
           let agentId = "";
           try {
-            agentId = core.agentIdFromKey(params.agentSessionKey ?? "", config.agents);
+            // Same rule as the tools: a caller we cannot identify is refused,
+            // never routed to the first configured agent's brain.
+            const who = resolveToolAgent({ sessionKey: params.agentSessionKey });
+            if ("error" in who) {
+              log.debug?.(logFields({ op: "memoryCorpusSupplement.search", outcome: "skipped", reason: "caller_not_identified" }));
+              return [];
+            }
+            agentId = who.agentId;
             const limit = params.maxResults ?? 5;
             const results = await core.hybridRetrieve(
               agentId,
               params.query,
               params.agentSessionKey ?? EPHEMERAL_SESSION_ID,
-              config,
+              configFor(agentId),
             );
             return results.slice(0, limit).map((n) => ({
               corpus: "openwave",
@@ -914,14 +953,26 @@ export default definePluginEntry({
     //   17:43 drainEmbeddingQueue.batch error: "The database connection is not open"  (59 s)
     //   17:58–18:00  three lifecycle.cleanup{reason:"restart"} cycles in 46 s
     //
-    // Fix: on `restart`, only release out-of-band resources (the sweep
-    // interval and in-memory queues — the new generation gets a fresh
-    // module-level Map anyway). DO NOT close DB handles; the new generation
-    // will reopen them lazily via getDb() and the file is unaffected.
+    // Fix: on `restart`, only release the out-of-band timers. DO NOT close DB
+    // handles; the new generation will reopen them lazily via getDb() and the
+    // file is unaffected.
+    //
+    // `restart` also leaves the per-session bookkeeping alone (bootstrapInjected,
+    // queuedSessions, bootstrapCache, sessionAgentMap, the engine's pending
+    // injection / embedding queues). The host keeps durable session state on
+    // restart, and these maps only mirror it: when the host replaces the module
+    // they die with it anyway, and when a generation shares this module instance
+    // clearing them made every live session receive its bootstrap AGAIN on the
+    // next turn and dropped queued embeddings for nothing.
     //
     // On `reset`/`delete`/`disable`, the old aggressive cleanup is correct:
     // those reasons explicitly tear down durable plugin state, so closing DB
     // handles is the right thing.
+    //
+    // The timers are re-armed by gateway_start (OpenClaw re-runs it for the new
+    // registry on a plugin reload) and, as a safety net, lazily by the per-turn
+    // hooks (ensureSchedulersArmed) in case a restart cleanup reached a module
+    // instance that never sees another gateway_start.
     try {
       api.lifecycle.registerRuntimeLifecycle({
         id: "openwave",
@@ -937,23 +988,18 @@ export default definePluginEntry({
           disarmSchedulers(schedulerHandles);
           schedulerHandles = null;
 
-          // Always: clear in-memory caches that belong to this module
-          // instance. These are per-process Maps/Sets; the new generation
-          // gets fresh ones from its own module load, so dropping ours is a
-          // no-op for durable state.
-          bootstrapCache.clear();
-          bootstrapInjected.clear();
-          queuedSessions.clear();
-          knownSessions.clear();
-          sessionAgentMap.clear();
-          core.clearPendingInjections();
-          core.clearEmbeddingQueues();
-
           // reset/delete/disable only: tear down durable state. `restart`
           // explicitly keeps durable session state per the docs above and
           // closing DB handles here breaks any concurrent op the old
           // generation has in flight (e.g. drainEmbeddingQueue mid-batch).
           if (reason === "reset" || reason === "delete" || reason === "disable") {
+            bootstrapCache.clear();
+            bootstrapInjected.clear();
+            queuedSessions.clear();
+            knownSessions.clear();
+            sessionAgentMap.clear();
+            core.clearPendingInjections();
+            core.clearEmbeddingQueues();
             if (reason === "delete") {
               // Remove the legacy cron jobs so a reinstall doesn't leave them.
               const cron = api.runtime?.cron as CronService | undefined;
@@ -981,6 +1027,17 @@ export default definePluginEntry({
     // `harvestExtraction(agentId, opPrefix, config, log)`. session_end calls it
     // directly; the scheduler drives the hourly run.
 
+    // Sleep-system timers: armed by gateway_start, released by gateway_stop and
+    // by every lifecycle cleanup. Safety net: if a cleanup released them and no
+    // gateway_start followed in this module instance, the next turn re-arms
+    // them, so the sleep system can never stay dead until a full gateway restart.
+    let gatewayStopped = false;
+    const ensureSchedulersArmed = (): void => {
+      if (schedulerHandles || gatewayStopped) return;
+      schedulerHandles = armSchedulers(config.agents, configFor, log);
+      log.info(logFields({ op: "sleep_system", outcome: "rearmed", note: "timers were released by a lifecycle cleanup without a gateway_start; re-armed on the next turn" }));
+    };
+
     // ─── Hooks ────────────────────────────────────────────────────────────────
 
     // gateway_start: init DBs, remove legacy cron jobs, register the
@@ -988,6 +1045,7 @@ export default definePluginEntry({
     // (scheduler.ts).
     api.on("gateway_start", async (_event: unknown, ctx: { getCron?: () => CronService | undefined }) => {
       const t0 = Date.now();
+      gatewayStopped = false;
       log.info(logFields({ op: "gateway_start", outcome: "start" }));
 
       for (const agentId of config.agents) {
@@ -1030,7 +1088,7 @@ export default definePluginEntry({
       // (Graft B). Held at module level so gateway_stop and lifecycle cleanup can
       // release them for the old runtime generation.
       disarmSchedulers(schedulerHandles);
-      schedulerHandles = armSchedulers(config.agents, config, log);
+      schedulerHandles = armSchedulers(config.agents, configFor, log);
 
       log.info(logFields({ op: "gateway_start", outcome: "ready", durationMs: Date.now() - t0 }));
     });
@@ -1038,6 +1096,7 @@ export default definePluginEntry({
     // gateway_stop
     api.on("gateway_stop", async () => {
       const t0 = Date.now();
+      gatewayStopped = true;
       disarmSchedulers(schedulerHandles);
       schedulerHandles = null;
       // Clear in-memory queues so a fast restart doesn't replay stale state
@@ -1077,7 +1136,7 @@ export default definePluginEntry({
         );
         return;
       }
-      maybeRunConsolidationFromCronEvent(event, config.agents, config, log);
+      maybeRunConsolidationFromCronEvent(event, config.agents, configFor, log);
     });
 
     // session_start: warm bootstrap cache + queue first-turn injection (T2.2 Layer 2)
@@ -1094,6 +1153,7 @@ export default definePluginEntry({
       // resolve to the right agent's brain.db (see sessionAgentMap).
       recordSessionAgent(sessionId, agentId);
       recordSessionAgent(sessionKey, agentId);
+      ensureSchedulersArmed();
 
       if (bootstrapCache.has(sessionId)) return;
 
@@ -1112,7 +1172,7 @@ export default definePluginEntry({
       const surface: core.Surface = sessionKey.startsWith("voice:") ? "voice" : "chat";
       let ctx = "";
       try {
-        ctx = await core.buildBootstrapContext(agentId, sessionId, config, log, surface, contextOptsFor(agentId));
+        ctx = await core.buildBootstrapContext(agentId, sessionId, configFor(agentId), log, surface, contextOptsFor(agentId));
         bootstrapCache.set(sessionId, ctx);
         log.info(logFields({ agentId, sessionId, op: "session_start.bootstrap", outcome: "ok", chars: ctx.length, surface, durationMs: Date.now() - t0 }));
       } catch (err) {
@@ -1153,7 +1213,7 @@ export default definePluginEntry({
       }
 
       try {
-        await harvestExtraction(agentId, "session_end", config, log);
+        await harvestExtraction(agentId, "session_end", configFor(agentId), log);
       } catch (err) {
         log.warn(logFields({ agentId, sessionId, op: "session_end.extraction", outcome: "error", error: String(err) }));
       }
@@ -1232,7 +1292,9 @@ export default definePluginEntry({
       const sessionId = hookCtx?.sessionId ?? "";
       recordSessionAgent(sessionId, agentId);
       recordSessionAgent(sessionKey, agentId);
+      ensureSchedulersArmed();
       const parts: string[] = [];
+      const cfg = configFor(agentId);
 
       // Per-surface trim: voice gets a tight bootstrap + recall + skips
       // neuro/morning/review noise. Chat surface unchanged.
@@ -1241,7 +1303,7 @@ export default definePluginEntry({
       // Layer 1: self-model header (every turn, never compacted).
       let selfModelHeader = "";
       try {
-        selfModelHeader = await core.buildSelfModelHeader(agentId, config, log, surface, contextOptsFor(agentId));
+        selfModelHeader = await core.buildSelfModelHeader(agentId, cfg, log, surface, contextOptsFor(agentId));
       } catch (err) {
         log.warn(logFields({ agentId, sessionId, op: "selfModelHeader", outcome: "error", error: String(err) }));
         selfModelHeader = core.BRAIN_HEADER;
@@ -1260,7 +1322,7 @@ export default definePluginEntry({
           bootstrapInjected.add(sessionId);
         } else {
           try {
-            const bootstrapCtx = await core.buildBootstrapContext(agentId, sessionId, config, log, surface, contextOptsFor(agentId));
+            const bootstrapCtx = await core.buildBootstrapContext(agentId, sessionId, cfg, log, surface, contextOptsFor(agentId));
             parts.push(bootstrapCtx);
             bootstrapInjected.add(sessionId);
           } catch (err) {
@@ -1287,7 +1349,7 @@ export default definePluginEntry({
       // picks up pre-primed nodes as higher-salience seeds.
       try {
         const neuromod = core.getNeuromodulatorState(agentId);
-        await core.runProactiveMonitor(agentId, sessionId, config, log, neuromod, lastUserMsg ?? undefined);
+        await core.runProactiveMonitor(agentId, sessionId, cfg, log, neuromod, lastUserMsg ?? undefined);
       } catch {
         // non-fatal — recall continues without pre-priming
       }
@@ -1295,7 +1357,7 @@ export default definePluginEntry({
       // Xanima 0.2.0: alignment note (once, after a drift pass) + goal triggers, budget-capped.
       if (surface !== "voice") {
         try {
-          const g = core.buildGoalTurnContext(agentId, lastUserMsg ?? "", config, Date.now(), log);
+          const g = core.buildGoalTurnContext(agentId, lastUserMsg ?? "", cfg, Date.now(), log);
           if (g.text) parts.push(g.text);
           alignmentAcks.offer(agentId, g.noteIds ?? g.noteId); // delivered only after a real reply (llm_output)
         } catch (err) {
@@ -1305,7 +1367,7 @@ export default definePluginEntry({
 
       const recalledIds = new Set<string>();
       try {
-        const recallBlock = await core.buildRecallContext(agentId, lastUserMsg, hookCtx?.sessionKey ?? sessionId, config, surface, recalledIds);
+        const recallBlock = await core.buildRecallContext(agentId, lastUserMsg, hookCtx?.sessionKey ?? sessionId, cfg, surface, recalledIds);
         if (recallBlock) parts.push(recallBlock);
       } catch (err) {
         log.warn(logFields({ agentId, sessionId, op: "before_prompt_build.recall", outcome: "error", error: String(err) }));
@@ -1321,7 +1383,7 @@ export default definePluginEntry({
       // Voice keeps its tight budget and is excluded.
       if (surface !== "voice") {
         try {
-          const procBlock = core.buildProceduralContext(agentId, hookCtx?.sessionKey ?? sessionId, recalledIds, config);
+          const procBlock = core.buildProceduralContext(agentId, hookCtx?.sessionKey ?? sessionId, recalledIds, cfg);
           if (procBlock) parts.push(procBlock);
         } catch (err) {
           log.warn(logFields({ agentId, sessionId, op: "before_prompt_build.procedural", outcome: "error", error: String(err) }));
@@ -1367,7 +1429,7 @@ export default definePluginEntry({
       // Xanima: one-line memory self-status, only when something needs attention.
       if (surface !== "voice") {
         try {
-          const footer = core.buildStatusFooter(agentId, config);
+          const footer = core.buildStatusFooter(agentId, cfg);
           if (footer) result.appendSystemContext = result.appendSystemContext ? `${result.appendSystemContext}\n${footer}` : footer;
         } catch (err) {
           log.debug?.(logFields({ agentId, op: "before_prompt_build.status", outcome: "error", error: String(err) }));
@@ -1399,7 +1461,7 @@ export default definePluginEntry({
       const agentId = resolveAgentId(undefined, hookCtx, config.agents);
       if (!config.agents.includes(agentId)) return;
       try {
-        const header = await core.buildSelfModelHeader(agentId, config, log, "chat", contextOptsFor(agentId));
+        const header = await core.buildSelfModelHeader(agentId, configFor(agentId), log, "chat", contextOptsFor(agentId));
         if (header) return { appendContext: header };
       } catch (err) {
         log.warn(logFields({ agentId, op: "heartbeat_prompt_contribution", outcome: "error", error: String(err) }));
@@ -1547,14 +1609,14 @@ export default definePluginEntry({
       // Xanima 0.2.0: heuristic decision drafts from the agent's own words.
       if (!isCronSession) {
         try {
-          const drafted = core.autoExtractDecisions(agentId, content, config, { evidence: [episodeId] });
+          const drafted = core.autoExtractDecisions(agentId, content, configFor(agentId), { evidence: [episodeId] });
           if (drafted.length) log.info(logFields({ agentId, sessionId, op: "llm_output.decision_draft", outcome: "ok", count: drafted.length }));
         } catch (err) {
           log.debug?.(logFields({ agentId, sessionId, op: "llm_output.decision_draft", outcome: "error", error: String(err) }));
         }
         // Xanima 0.3.0: "I think … because …", "open question: …", "assuming …" → open-item drafts.
         try {
-          const captured = core.autoExtractOpenItems(agentId, content, config, { evidence: [episodeId] });
+          const captured = core.autoExtractOpenItems(agentId, content, configFor(agentId), { evidence: [episodeId] });
           if (captured.length) log.info(logFields({ agentId, sessionId, op: "llm_output.open_item_draft", outcome: "ok", count: captured.length }));
         } catch (err) {
           log.debug?.(logFields({ agentId, sessionId, op: "llm_output.open_item_draft", outcome: "error", error: String(err) }));
@@ -1586,7 +1648,7 @@ export default definePluginEntry({
       const agentId = resolveAgentId(undefined, hookCtx, config.agents);
       if (!config.agents.includes(agentId)) return;
       try {
-        await core.subconsciousTick(agentId, config, log);
+        await core.subconsciousTick(agentId, configFor(agentId), log);
       } catch (err) {
         log.warn(logFields({ agentId, op: "agent_end.subconscious", outcome: "error", error: String(err) }));
       }
@@ -1610,7 +1672,7 @@ export default definePluginEntry({
         log.debug?.(logFields({ agentId, op: "after_compaction.episode", outcome: "error", error: String(err) }));
       }
       try {
-        core.handleCompaction(agentId, event ?? {}, config, log);
+        core.handleCompaction(agentId, event ?? {}, configFor(agentId), log);
       } catch (err) {
         log.warn(logFields({ agentId, op: "after_compaction.handle", outcome: "error", error: String(err) }));
       }
@@ -1626,8 +1688,9 @@ export default definePluginEntry({
       op: "register",
       outcome: "ok",
       agents: config.agents.length,
-      tools: OPENWAVE_TOOL_NAMES.length,
+      tools: OPENWAVE_TOOL_NAMES.length + Object.keys(core.ROOM_TOOL_DEFS).length,
       engine: "xanima-core",
+      allowAgentReset: agentResetAllowed(config),
       // LLM-route diagnostics (booleans/model-id only, never key material):
       // added 2026-07-13 when REM fell back to keyword mode despite the nvidia
       // ingestionModel being configured — makes key/config delivery visible.
