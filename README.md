@@ -27,11 +27,11 @@ an MCP server structurally cannot.
 
 | | |
 |---|---|
-| npm package | [`xanima-openclaw`](https://www.npmjs.com/package/xanima-openclaw) 0.5.0 |
+| npm package | [`xanima-openclaw`](https://www.npmjs.com/package/xanima-openclaw) 0.6.0 |
 | ClawHub | `clawhub:xanima` |
 | plugin id | `xanima` (manifest `legacyPluginIds: ["openwave"]`) |
 | config entry | `plugins.entries.xanima` |
-| engine | `xanima-core` 0.5.0, schema v25 |
+| engine | `xanima-core` 0.6.0, schema v27 |
 | brain files | `~/.xanima/<agentId>/brain.db` |
 | tools | 43 `brain_*` tools (names unchanged since openwave and permanent) |
 | brain service | `xanima-server` (formerly sharpwave-server; see [Remote brain mode](#remote-brain-mode)) |
@@ -620,8 +620,8 @@ pick up engine changes, build and `npm pack` `packages/core` in the xanima
 repo, drop the tarball into `vendor/` named `xanima-core-<version>-<engine
 commit>.tgz` (tracked although `*.tgz` is ignored), point the `xanima-core`
 devDependency at it and run `npm install` so the lockfile follows. The vendored
-engine is currently xanima `main` at `2f0be36` (dormant forgetting, owner-only
-identity, procedures, source turns, never-downgrade merge).
+engine is currently `xanima-core` 0.6.0 (`vendor/xanima-core-0.6.0.tgz`); add an
+engine-commit suffix to the file name only when vendoring an unreleased engine.
 
 ### Remote-mode tests
 
@@ -648,7 +648,7 @@ this checkout. CI does not build the server, so the remote suites skip there.
 
 ## Release notes
 
-- **Unreleased (stronger brain)** — engine re-vendored from xanima `2f0be36`:
+- **0.6.0** — engine `xanima-core` 0.6.0 (schema v27):
   forgetting is dormancy (`forgetting`), plans carried out become verified
   procedures (`procedures`, `procedureVerifyAfter`), `brain_query
   include_dormant`, `brain_expand source_turns`, the dedupe merge never
@@ -658,7 +658,7 @@ this checkout. CI does not build the server, so the remote suites skip there.
   reject` works from the owner's conversation in local mode (held identity
   proposals, quarantined writes, imported changes); `identityMirror` follows
   applied changes only; the new settings are in the manifest.
-- **Unreleased (audit fixes)** — the `openwave:consolidation` cron no longer
+  Also in 0.6.0 (audit fixes): the `openwave:consolidation` cron no longer
   wakes the agent (`wakeMode: "next-heartbeat"`; a leftover `"now"` job is
   switched in place) and the in-process pass runs once, on the job's
   finished-ok event; Control UI persona overrides are applied to every
