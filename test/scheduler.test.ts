@@ -100,6 +100,25 @@ test("the awake-replay interval runs core.awakeReplayTick without throwing", asy
   disarmSchedulers(h);
 });
 
+test("a per-agent config resolver is consulted on the timer paths (persona overrides reach the sleep system)", async () => {
+  vi.useFakeTimers();
+  const resolver = vi.fn((agentId: string) => ({ ...DEFAULT_CONFIG, contextBudget: agentId === "sched-r1" ? 999 : DEFAULT_CONFIG.contextBudget }));
+  const h = armSchedulers(["sched-r1", "sched-r2"], resolver, noop);
+  await vi.advanceTimersByTimeAsync(11 * 60 * 1000); // past the 10m embedding sweep
+  expect(resolver).toHaveBeenCalledWith("sched-r1");
+  expect(resolver).toHaveBeenCalledWith("sched-r2");
+  disarmSchedulers(h);
+
+  const lines: string[] = [];
+  const log = { info: (m: string) => lines.push(m), warn: (m: string) => lines.push(m), error() {} };
+  const passResolver = vi.fn(() => ({ ...DEFAULT_CONFIG }));
+  vi.useRealTimers();
+  runConsolidationPass(["sched-r3"], passResolver, log, "host_cron");
+  await new Promise((r) => setTimeout(r, 50));
+  expect(passResolver).toHaveBeenCalledWith("sched-r3");
+  expect(lines.find((l) => l.includes('"op":"sleep_system.tick"') && l.includes('"agentId":"sched-r3"'))).toBeTruthy();
+});
+
 test("runConsolidationPass logs sleep_system.tick with host_cron trigger", async () => {
   const lines: string[] = [];
   const log = { info: (m: string) => lines.push(m), warn: (m: string) => lines.push(m), error() {} };

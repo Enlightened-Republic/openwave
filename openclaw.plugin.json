@@ -80,6 +80,11 @@
         ],
         "description": "OpenClaw agent ids xanima serves, or \"*\" for every agent in the OpenClaw config (remote mode picks up new agents live, no restart). Local mode routes each to ~/.xanima/<id>/brain.db (or ~/.sharpwave/<id> until `xanima-server migrate` has run)."
       },
+      "allowAgentReset": {
+        "type": "boolean",
+        "default": false,
+        "description": "Let the agent call brain_reset on its own brain (confirm = its own agent id, which it knows). Off by default: with it on, a prompt injection can wipe the agent's memory (a backup is taken, nothing is restored automatically). Local and remote mode."
+      },
       "contextBudget": {
         "type": "number",
         "default": 2000
@@ -394,6 +399,45 @@
         ],
         "description": "No schema default on purpose: unset behaves as \"identity\" with the workspace dedupe. Remote mode (0.4.0): show the brain's identity line (and optionally its top 3 active goals) each turn, like local mode's header. Nothing is shown while identity is empty; when left unset it is also skipped while MEMORY.md / USER.md own identity (set it explicitly to show it anyway)."
       },
+      "soulExportProfile": {
+        "type": "string",
+        "enum": [
+          "compact",
+          "full"
+        ],
+        "default": "compact",
+        "description": "0.4.0 Soul Package: default export profile for brain_export_soul."
+      },
+      "soulTokenBudget": {
+        "type": "number",
+        "default": 2000,
+        "minimum": 200,
+        "description": "0.4.0 Soul Package: token budget (about chars / 4) for a compact package's content."
+      },
+      "soulMinFactConfidence": {
+        "type": "number",
+        "default": 0.6,
+        "minimum": 0,
+        "maximum": 1,
+        "description": "0.4.0 Soul Package: facts below this confidence score are left out of an export."
+      },
+      "soulImportConfidence": {
+        "type": "number",
+        "default": 0.5,
+        "minimum": 0,
+        "maximum": 1,
+        "description": "0.4.0 Soul Package: confidence score cap for imported memories (the original is kept in soul_provenance)."
+      },
+      "soulMergeApplyTheirs": {
+        "type": "boolean",
+        "default": true,
+        "description": "0.4.0 Soul Package three-way merge: apply theirs-only changes to skills / facts / lessons as supersedes (history kept). Identity, values and goals always go to review."
+      },
+      "soulPackageOnExport": {
+        "type": "boolean",
+        "default": false,
+        "description": "0.4.0 Soul Package: backups also write a compact package next to each private-brain snapshot."
+      },
       "alignmentNoteMaxTokens": {
         "type": "number",
         "default": 60,
@@ -581,11 +625,23 @@
         "minimum": 1,
         "maximum": 50,
         "description": "0.5.0: turns a brain_focus lasts when no ttl is given."
+      },
+      "rooms": {
+        "type": "boolean",
+        "default": true,
+        "description": "0.5.0: rooms (named shared namespaces with members) on the brain service; no room exists until an admin creates one. Local mode has no rooms."
+      },
+      "roomRecallMax": {
+        "type": "number",
+        "default": 3,
+        "minimum": 0,
+        "maximum": 20,
+        "description": "0.5.0: max subscribed-room items added to a turn's recall (tagged [type·room·writer])."
       }
     }
   },
   "controlUi": {
-    "entry": "dist/control-ui/c9325d63ae876dc5/index.js"
+    "entry": "dist/control-ui/a727fdf79963cf84/index.js"
   },
   "uiHints": {
     "brainToken": {

@@ -211,7 +211,9 @@ describe("remote brain mode: degraded service (no server needed)", () => {
         expect(r?.appendSystemContext).toBe(REMOTE_DOWN_NOTICE);
         expect(r?.prependContext).toBeUndefined();
       }
-      const warns = h.logs.filter((l) => l.level === "warn" && l.msg.includes("before_prompt_build.recall"));
+      // recall, goals and the status footer are requested in parallel; whichever
+      // fails first takes the one rate-limited warning for the outage.
+      const warns = h.logs.filter((l) => l.level === "warn" && l.msg.includes('"op":"before_prompt_build.'));
       expect(warns.length).toBe(1);
       const t = await h.callTool("brain_query", "ow-delta", { query: "x" });
       expect(t).toMatch(/unreachable/);
