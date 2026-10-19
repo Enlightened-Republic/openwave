@@ -4,8 +4,8 @@
   "legacyPluginIds": [
     "openwave"
   ],
-  "version": "0.5.0",
-  "description": "Xanima (formerly openwave): autonomic memory and agent continuity for OpenClaw agents. Injects identity, goals and query-relevant recall (with confidence and relative-time labels) into every turn, and runs the sleep system. Powered by xanima-core. 0.2.0 adds a decision ledger, versioned goals with drift detection, alignment notes and goal triggers; 0.3.0 adds reflection, experience replay, hypotheses / questions / assumptions, commitments and plans (park / resume briefings) and meta-tools; 0.4.0 adds the portable Soul Package (brain_export_soul for the agent's own brain, and the brain_review queue for imported identity / goal changes); 0.5.0 adds shared rooms on the brain service (brain_room / brain_publish / brain_room_query / brain_subscribe), brain_focus and injection categories, and the poisoning quarantine.",
+  "version": "0.6.0",
+  "description": "Xanima (formerly openwave): autonomic memory and agent continuity for OpenClaw agents. Injects identity, goals and query-relevant recall (with confidence and relative-time labels) into every turn, and runs the sleep system. Powered by xanima-core. 0.2.0 adds a decision ledger, versioned goals with drift detection, alignment notes and goal triggers; 0.3.0 adds reflection, experience replay, hypotheses / questions / assumptions, commitments and plans (park / resume briefings) and meta-tools; 0.4.0 adds the portable Soul Package (brain_export_soul for the agent's own brain, and the brain_review queue for imported identity / goal changes); 0.5.0 adds shared rooms on the brain service (brain_room / brain_publish / brain_room_query / brain_subscribe), brain_focus and injection categories, and the poisoning quarantine; 0.6.0 keeps every memory (dormant, never deleted), turns plans carried out into verified procedures, and changes identity only with the owner.",
   "activation": {
     "onStartup": true
   },

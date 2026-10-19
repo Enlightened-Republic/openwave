@@ -1,0 +1,47 @@
+name: release
+
+# Publishes xanima-openclaw to npm when a version tag is pushed (v0.6.0 → 0.6.0).
+# Auth: an npm automation token in the repository secret NPM_TOKEN, or npm
+# trusted publishing (OIDC) configured for the package on npmjs.com, in which
+# case the secret can be left unset. `--provenance` attaches the build attestation.
+# ClawHub is published separately (clawhub CLI), not by this workflow.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: committed control-ui hash must match the build
+        run: git diff --exit-code -- openclaw.plugin.json
+      - name: tag matches the package and manifest versions
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+            const manifest = JSON.parse(fs.readFileSync("openclaw.plugin.json", "utf8")).version;
+            const tag = process.env.GITHUB_REF_NAME.replace(/^v/, "");
+            if (pkg !== tag || manifest !== tag) { console.error(`tag ${tag} != package.json ${pkg} / openclaw.plugin.json ${manifest}`); process.exit(1); }
+            console.log(`releasing xanima-openclaw ${pkg}`);
+          '
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
