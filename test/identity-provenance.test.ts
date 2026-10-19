@@ -83,7 +83,7 @@ describe.skipIf(!HAVE_SERVER)("brain_identity through the remote proxy (real xan
   beforeAll(async () => {
     writeFileSync(join(ws, "IDENTITY.md"), "# IDENTITY\n\n- **Name:** Rid\n- **Vibe:** quiet\n");
     writeFileSync(join(ws, "SOUL.md"), "# SOUL\n\nCore.\n");
-    svc = await startServer();
+    svc = await startServer(undefined, { brain: { identity: { changesFrom: ["owner_turn", "reflection", "agent_turn"] } } }); // the service's default holds agent_turn for the owner; this test is about the plugin's attestation
     svc.writeTokenFile("rid", svc.mint("rid", ["read", "write"]));
     mock = makeMockApi({ enabled: true, config: { agents: ["rid"], brainMode: "remote", brainUrl: svc.url, brainTokenFile: join(svc.tokenDir, "{agentId}.token"), identityMirror: true } }, { workspaceDir: ws });
     plugin.register(mock.api as never);

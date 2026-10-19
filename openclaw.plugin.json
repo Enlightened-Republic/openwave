@@ -133,6 +133,26 @@
         "type": "number",
         "default": 90
       },
+      "forgetting": {
+        "type": "string",
+        "enum": [
+          "dormant",
+          "delete"
+        ],
+        "default": "dormant",
+        "description": "What sleep does with a memory whose retrievability has decayed to nothing: dormant (default) keeps it on disk, out of recall, revivable with brain_query include_dormant; delete removes the row (pre-0.6 behaviour). Local mode; the brain service has its own setting."
+      },
+      "procedures": {
+        "type": "boolean",
+        "default": true,
+        "description": "Sleep compiles plans the agent carried out (brain_plan ... done, at least two done steps) into step-by-step procedures with a success / failure ledger. Local mode."
+      },
+      "procedureVerifyAfter": {
+        "type": "number",
+        "minimum": 1,
+        "default": 2,
+        "description": "Successful runs before a compiled procedure counts as verified and is injected as an operational rule (default 2). A matching abandoned plan counts as a failure; when failures catch up the procedure is demoted."
+      },
       "ingestionModel": {
         "type": "string",
         "default": "openrouter/deepseek/deepseek-v4-flash"
@@ -529,8 +549,20 @@
       "identity": {
         "type": "object",
         "additionalProperties": false,
-        "description": "brain_identity: agents change their own identity and values only from their own reflection and conversations with their owner (applied at once, versioned, revertible); changes in runs that read outside content are refused. Each guardrail is one switch. Local mode; on remote mode set them in the brain service config.",
+        "description": "brain_identity: who the agent is changes only through conversations with its owner (applied at once, versioned, revertible). A change the agent proposes in its own reflection run (cron / heartbeat) is held for the owner to accept with brain_review; changes in runs that read outside content are refused. With no commands.ownerAllowFrom list the plugin cannot tell the owner from anyone else, so a clean conversational turn counts as the owner's (changesFrom owner_turn + agent_turn) unless changesFrom is set here. Each guardrail is one switch. Local mode; on remote mode set them in the brain service config.",
         "properties": {
+          "changesFrom": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "owner_turn",
+                "reflection",
+                "agent_turn"
+              ]
+            },
+            "description": "Attested run origins that may change identity directly (engine default [\"owner_turn\"]; the plugin adds agent_turn when no owner list is configured). Others among reflection / agent_turn are held for the owner's review. Add reflection and agent_turn for the 0.5.0 self-evolution."
+          },
           "selfEdit": {
             "type": "boolean",
             "description": "Agents may change their own identity (default true; false = read-only)."

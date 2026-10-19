@@ -232,9 +232,13 @@ from the service's `config.json` `brain` block instead).
   `replayMaxChars`, `metaToolMaxChars`.
 - **Rooms, focus, quarantine (0.5.0):** `quarantine` (`log` | `enforce`),
   `injectionCategories`, `focusDefaultTtl`.
-- **Identity (0.5.0):** `identity` (`selfEdit`, `refuseUntrusted`,
+- **Identity (0.5.0):** `identity` (`changesFrom`, `selfEdit`, `refuseUntrusted`,
   `saveRefusedAsNote`, `locked`, `maxChangesPerDay`, `maxChars`,
   `requireAttestation`), `identityMirror`, `identityTrustedTools`.
+- **Memory for life (unreleased):** `forgetting` (`dormant` | `delete`, default
+  `dormant`: faded memories stay on disk and come back on an explicit search),
+  `procedures` (true) and `procedureVerifyAfter` (2): plans the agent carried
+  out become step-by-step procedures, verified by repeated success.
 - **Soul Package (0.4.0):** `soulExportProfile` (`compact` | `full`),
   `soulTokenBudget`, `soulMinFactConfidence`, `soulImportConfidence`,
   `soulMergeApplyTheirs`, `soulPackageOnExport`.
@@ -321,6 +325,20 @@ What to look for in the gateway log:
 `consolidationEpisodeGate` new episodes or less than
 `consolidationTimeGateHours` since the last pass). Remote mode registers no
 cron and no timers: the brain service owns sleep.
+
+Two things sleep does with this engine that it did not before. **Forgetting is
+dormancy, not deletion** (`forgetting: "dormant"`, default): a memory whose
+retrievability has decayed to nothing is marked dormant and leaves recall and
+the header, but stays on disk with its links and vector; `brain_query
+{include_dormant: true}` finds it again and revives it, `brain_status` counts
+them, and `forgetting: "delete"` restores the old physical prune. **Learning
+becomes a step-by-step skill** (`procedures`, default on): a plan the agent
+carried out (`brain_plan … done`, at least two done steps) is compiled into a
+`procedural` node with numbered steps and a success / failure ledger; after
+`procedureVerifyAfter` (2) successful runs it is verified and injected as an
+operational rule, and a matching abandoned plan counts against it. Only
+verified procedures (and hand-written rules) reach the "operational rules"
+block; a sentence sleep merely extracted from a pasted page never does.
 
 ---
 
@@ -452,7 +470,10 @@ the model **only** `details`.
 
 Most memory work needs **no** tool call — xanima injects and logs
 automatically. The tools are for deliberate deep recall (`brain_query`, with
-`as_of` for "what did I believe about X on date T"), deliberate writes
+`as_of` for "what did I believe about X on date T" and `include_dormant: true`
+to search memories sleep made dormant and revive what matches), reading the
+original conversation behind a memory (`brain_expand` with `source_turns: N`:
+the source turn marked `»` with N turns either side), deliberate writes
 (`brain_write`), corrections with a reason (`brain_retract`, `brain_supersede`),
 and introspection (`brain_status`).
 
@@ -519,22 +540,37 @@ settings apply. See `docs/rooms.md` and `docs/security-model.md` in the xanima r
 **Agents evolve their own identity (`brain_identity`).** The agent can add, change or
 remove a line of its identity header (`- **Field:** value`) or a core value, with a short
 reason: `brain_identity {action: "change", target: "field", field: "Vibe", value: "…",
-reason: "…"}` (`get` / `history` to read). Identity changes only from the agent's own
-reflection and its conversations with its owner. Such a change applies at once, is
-versioned and shows in the header from the next turn. The operator sees it in
-`brain_status` and `xanima-server identity history --agent X`, and can undo it with
-`identity revert <version>`. In a run where a non-memory tool (web, read, exec, …) returned
-output, the run came from a non-owner sender (with `commands.ownerAllowFrom` set), or the
-new text repeats recent tool output, the change is **refused**, with a pointer to save what
-was learned with `brain_write` as knowledge or a skill. There is no review queue. The
-proposal is kept as a candidate knowledge note tagged `source:web`, quarantine-checked.
-Whatever the model claims about provenance is ignored. Switches under `identity`:
-`selfEdit` (true), `refuseUntrusted` (true), `saveRefusedAsNote` (true), `locked`
-(`["Name"]`), `maxChangesPerDay` (0 = no limit), `maxChars` (2000),
-`requireAttestation` (false). Plugin settings: `identityMirror` (false; when true,
-applied changes are written back to the workspace `IDENTITY.md` field lines and a managed
-"Evolved values" block in `SOUL.md`) and `identityTrustedTools` ([]; tools whose output
-doesn't count as outside content).
+reason: "…"}` (`get` / `history` to read). **Who the agent is changes only through
+conversations with its owner.** A change proposed in a conversation the plugin attests as
+the owner's applies at once, is versioned and shows in the header from the next turn. A
+change the agent proposes in its own reflection run (cron / heartbeat) is **held**: a
+pending review item the owner accepts or rejects from the conversation with
+`brain_review {action: "accept" | "reject", id}` (in local mode the owner in the
+conversation is the admin; a cron run or a run that read tool output cannot accept). The
+operator sees applied changes in `brain_status` and `xanima-server identity history
+--agent X`, and can undo one with `identity revert <version>`. In a run where a non-memory
+tool (web, read, exec, …) returned output, the run came from a non-owner sender (with
+`commands.ownerAllowFrom` set), or the new text repeats recent tool output, the change is
+**refused**, with a pointer to save what was learned with `brain_write` as knowledge or a
+skill; the proposal is kept as a candidate knowledge note tagged `source:web`,
+quarantine-checked. Whatever the model claims about provenance is ignored.
+
+Who the owner is: with `commands.ownerAllowFrom` configured the plugin attests owner turns
+and the engine default `identity.changesFrom: ["owner_turn"]` applies, so a change proposed
+in any other turn is held. Without an owner list the plugin cannot tell the one human on the
+box from anyone else, so a clean conversational turn counts as the owner's
+(`changesFrom: ["owner_turn", "agent_turn"]`), as in 0.5.0; reflection runs are still held.
+Set `identity.changesFrom` yourself to override either way (add `reflection` for the 0.5.0
+self-evolution). In remote mode the brain service's own `identity` config decides, and the
+owner accepts held proposals with an admin token or `xanima-server soul review accept`.
+Sleep never changes identity either: an "I value …" / "I prefer …" sentence in the owner's
+turns is stored as a fact about the owner, never as the agent's value. Switches under
+`identity`: `changesFrom`, `selfEdit` (true), `refuseUntrusted` (true), `saveRefusedAsNote`
+(true), `locked` (`["Name"]`), `maxChangesPerDay` (0 = no limit), `maxChars` (2000),
+`requireAttestation` (false). Plugin settings: `identityMirror` (false; when true, applied
+changes are written back to the workspace `IDENTITY.md` field lines and a managed "Evolved
+values" block in `SOUL.md`) and `identityTrustedTools` ([]; tools whose output doesn't count
+as outside content).
 
 ---
 
@@ -567,7 +603,7 @@ Same brain db, same schema, no migration in either direction.
 
 ```bash
 nvm use                # Node 24 (.nvmrc); the openclaw dev dependency needs >= 24.16
-npm ci                 # lockfile install; xanima-core 0.5.0 comes from vendor/xanima-core-0.5.0.tgz
+npm ci                 # lockfile install; xanima-core comes from vendor/xanima-core-<version>-<engine commit>.tgz
                        # (package.json allowScripts lets npm 11 build the native modules)
 npm run typecheck
 npm test               # vitest — mock-api hook harness, local and remote
@@ -580,8 +616,12 @@ change. CI (`.github/workflows/ci.yml`) runs typecheck, tests and the build on
 Node 24 and fails if the committed hash is stale.
 
 The engine (`xanima-core`) is bundled into `dist/index.js` at build time. To
-pick up engine changes, drop a new tarball into `vendor/` (tracked although
-`*.tgz` is ignored) and point the `xanima-core` devDependency at it.
+pick up engine changes, build and `npm pack` `packages/core` in the xanima
+repo, drop the tarball into `vendor/` named `xanima-core-<version>-<engine
+commit>.tgz` (tracked although `*.tgz` is ignored), point the `xanima-core`
+devDependency at it and run `npm install` so the lockfile follows. The vendored
+engine is currently xanima `main` at `2f0be36` (dormant forgetting, owner-only
+identity, procedures, source turns, never-downgrade merge).
 
 ### Remote-mode tests
 
@@ -608,6 +648,16 @@ this checkout. CI does not build the server, so the remote suites skip there.
 
 ## Release notes
 
+- **Unreleased (stronger brain)** — engine re-vendored from xanima `2f0be36`:
+  forgetting is dormancy (`forgetting`), plans carried out become verified
+  procedures (`procedures`, `procedureVerifyAfter`), `brain_query
+  include_dormant`, `brain_expand source_turns`, the dedupe merge never
+  downgrades a belief, and identity changes only with the owner
+  (`identity.changesFrom`). Plugin side: with no `commands.ownerAllowFrom` a
+  clean conversational turn counts as the owner's; `brain_review accept |
+  reject` works from the owner's conversation in local mode (held identity
+  proposals, quarantined writes, imported changes); `identityMirror` follows
+  applied changes only; the new settings are in the manifest.
 - **Unreleased (audit fixes)** — the `openwave:consolidation` cron no longer
   wakes the agent (`wakeMode: "next-heartbeat"`; a leftover `"now"` job is
   switched in place) and the in-process pass runs once, on the job's
