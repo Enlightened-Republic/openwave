@@ -48,7 +48,9 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
   const ctx = { agentId: AGENT, sessionKey: `agent:${AGENT}:main`, sessionId: "s-main" };
 
   beforeAll(async () => {
-    svc = await startServer();
+    // the brain service holds agent_turn identity changes by default (identity.changesFrom = owner_turn); this
+    // suite exercises the plugin's attestation plumbing, so the service is opted into self-evolution here
+    svc = await startServer(undefined, { brain: { identity: { changesFrom: ["owner_turn", "reflection", "agent_turn"] } } });
     token = svc.mint(AGENT, ["read", "write"]);
     svc.writeTokenFile(AGENT, token);
     mock = makeMockApi({ enabled: true, config: { agents: [AGENT], brainMode: "remote", brainUrl: svc.url, brainTokenFile: join(svc.tokenDir, "{agentId}.token") } });
@@ -147,7 +149,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       ["brain_review", { node_id: a, quality: 3 }, /./],
       ["brain_edges", { node_id: a }, /./],
       ["brain_supersede", { old_node_id: b, new_content: "Hailey switched to cortados." }, /./],
-      ["brain_status", {}, /Brain status \(schema v25\)/],
+      ["brain_status", {}, /Brain status \(schema v\d+\)/],
       ["brain_export_soul", {}, /xanima-soul\/1, compact\)/],
       ["brain_review", { action: "list" }, /No pending review items/],
       ["brain_set_goal", { title: "Plan Hailey's birthday dinner", priority: "high" }, /Goal set: \S+ P2 \[active\]/],
@@ -179,6 +181,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       ["brain_subscribe", { room: "team" }, /room team not found/],
       ["brain_focus", { suppress: ["topic:tea"], ttl: 1 }, /Focus set: suppress topic:tea/],
       // brain_identity: no tool ran in this test session, so the plugin attests agent_turn and it applies
+      // (the service above is opted into agent_turn; the default service holds it for the owner)
       ["brain_identity", { action: "add", target: "field", field: "Vibe", value: "steady", reason: "settled into it" }, /Identity updated \(v1\)/],
     ];
     const EXPECTED_ERRORS = new Set(["brain_reset", "brain_publish", "brain_unpublish", "brain_room_query", "brain_subscribe"]);

@@ -452,6 +452,29 @@ export function applyPersonaOverrides(config: OpenwaveConfig, agentId: string): 
   return out;
 }
 
+/**
+ * Who counts as the owner for brain_identity (xanima-core `identity.changesFrom`, default
+ * `["owner_turn"]`: who the agent is changes only through conversations with its owner).
+ *
+ * With `commands.ownerAllowFrom` configured the plugin attests owner turns, so the strict
+ * default stands: a change proposed in the agent's own turn or reflection run is HELD for the
+ * owner. Without an owner list there is exactly one human on this box and no way to tell them
+ * from anyone else, so a clean conversational turn (attested `agent_turn`) counts as the
+ * owner's, as it did in 0.5.0; reflection runs (cron / heartbeat) are still held. An explicit
+ * `identity.changesFrom` in the plugin config always wins.
+ */
+export function identityPolicyFor(config: OpenwaveConfig, hostConfig: unknown): OpenwaveConfig {
+  if (config.identity?.changesFrom) return config;
+  if (readOwnerAllowFrom(hostConfig).length > 0) return config;
+  return { ...config, identity: { ...(config.identity ?? {}), changesFrom: ["owner_turn", "agent_turn"] } };
+}
+
+/** The owner is talking: an attested owner turn, or a clean conversational turn on a box with no owner list. */
+export function ownerIsPresent(origin: string, hostConfig: unknown): boolean {
+  if (origin === "owner_turn") return true;
+  return origin === "agent_turn" && readOwnerAllowFrom(hostConfig).length === 0;
+}
+
 // Registers the three settings-page session actions on the SAME plugin id
 // ("openwave") rather than via `defineFeaturePlugin` — that helper builds its
 // own standalone `definePluginEntry`, which would make "openwave settings" a
@@ -709,7 +732,7 @@ export default definePluginEntry({
       assemblyOptsFor(api, config, agentId, api.runtime?.config?.current?.());
     // Per-agent engine config (persona overrides applied). Reads `config` live, so
     // a setPersonaOverride in this process takes effect on the next engine call.
-    const configFor = (agentId: string): OpenwaveConfig => applyPersonaOverrides(config, agentId);
+    const configFor = (agentId: string): OpenwaveConfig => identityPolicyFor(applyPersonaOverrides(config, agentId), api.runtime?.config?.current?.());
 
     // ─── Tools (16) ─────────────────────────────────────────────────────────────
     // Definitions and executors both come from core's unified tool module, so
@@ -817,8 +840,25 @@ export default definePluginEntry({
             if ("error" in who) return brainToolResult(who.error, { isError: true });
             if (name === RESET_TOOL && !agentResetAllowed(config)) return brainToolResult(RESET_REFUSED_TEXT, { isError: true });
             const args = name === IDENTITY_TOOL ? attestIdentityArgs(params ?? {}, identityProv, provKey(toolContext)) : (params ?? {});
+            // brain_review accept / reject is the owner's decision (held identity proposals, quarantined
+            // writes, imported changes). Core refuses it without an admin; in local mode the admin is the
+            // owner in the conversation: an attested owner turn, or a clean turn on a box with no owner
+            // list. Never a cron / heartbeat run, never a run that read tool / web output.
+            if (name === "brain_review" && core.soulToolNeedsAdmin(name, args)) {
+              const origin = identityProv.attest(provKey(toolContext), []).origin;
+              if (!ownerIsPresent(origin, api.runtime?.config?.current?.())) {
+                return brainToolResult(`brain_review ${String(args["action"])}: only the owner can accept or reject a review item, from a conversation with the agent (this run is ${origin === "reflection" ? "a reflection / cron run" : origin === "tool_output" ? "tainted by tool output" : origin === "untrusted_sender" ? "from a non-owner sender" : origin}). Ask your owner, or use xanima-server soul review on a brain service.`, { isError: true });
+              }
+              const s = core.dispatchSoulTool(name, who.agentId, args, configFor(who.agentId), { admin: true, by: `${who.agentId}:owner` });
+              if (!s) return brainToolResult(`${name}: not available`, { isError: true });
+              log.info(logFields({ agentId: who.agentId, op: "review.owner", action: String(args["action"]), id: String(args["id"] ?? ""), outcome: s.isError ? "error" : "ok", origin }));
+              if (!s.isError && config.identityMirror === true && args["action"] === "accept") void mirrorIdentityLocal(who.agentId, []);
+              return brainToolResult(s.text, { isError: s.isError });
+            }
             const r = await dispatchBrainTool(name, who.agentId, args, configFor(who.agentId), "openwave");
-            if (!r.isError && name === IDENTITY_TOOL && config.identityMirror === true && ["add", "change", "remove"].includes(String(args["action"]))) void mirrorIdentityLocal(who.agentId, removedFieldOf(args));
+            // Mirror only an APPLIED change: a held proposal (owner policy) changes nothing in the brain, and a
+            // held `remove` must not drop the field from IDENTITY.md.
+            if (!r.isError && name === IDENTITY_TOOL && config.identityMirror === true && /^Identity updated/.test(r.text) && ["add", "change", "remove"].includes(String(args["action"]))) void mirrorIdentityLocal(who.agentId, removedFieldOf(args));
             return brainToolResult(r.text, { isError: r.isError });
           },
         }),
