@@ -855,7 +855,8 @@ export default definePluginEntry({
               if (!s.isError && config.identityMirror === true && args["action"] === "accept") void mirrorIdentityLocal(who.agentId, []);
               return brainToolResult(s.text, { isError: s.isError });
             }
-            const r = await dispatchBrainTool(name, who.agentId, args, configFor(who.agentId), "openwave");
+            // 0.7: the conversation the call belongs to — brain_now / brain_plan pin the current task per session.
+            const r = await dispatchBrainTool(name, who.agentId, args, configFor(who.agentId), "openwave", { sessionKey: provKey(toolContext) });
             // Mirror only an APPLIED change: a held proposal (owner policy) changes nothing in the brain, and a
             // held `remove` must not drop the field from IDENTITY.md.
             if (!r.isError && name === IDENTITY_TOOL && config.identityMirror === true && /^Identity updated/.test(r.text) && ["add", "change", "remove"].includes(String(args["action"]))) void mirrorIdentityLocal(who.agentId, removedFieldOf(args));
@@ -1394,10 +1395,28 @@ export default definePluginEntry({
         // non-fatal — recall continues without pre-priming
       }
 
-      // Xanima 0.2.0: alignment note (once, after a drift pass) + goal triggers, budget-capped.
+      // Xanima 0.7: the current task ("[BRAIN: now]") above everything else that is re-injected from
+      // stored state, and — on a content-free prompt ("continue") — this session's last turns in place
+      // of topic recall (core.buildRecallContext skips recall for such prompts itself).
+      const lowInfo = surface !== "voice" && cfg.currentTask !== false && core.isLowInformationPrompt(lastUserMsg ?? "");
       if (surface !== "voice") {
         try {
-          const g = core.buildGoalTurnContext(agentId, lastUserMsg ?? "", cfg, Date.now(), log);
+          const nowBlock = core.buildNowContext(agentId, sessionKey, cfg, { prompt: lastUserMsg ?? "" });
+          if (nowBlock) parts.push(nowBlock);
+          if (lowInfo) {
+            const turns = core.buildSessionRecentContext(agentId, sessionKey, 4);
+            if (turns) parts.push(turns);
+          }
+        } catch (err) {
+          log.debug?.(logFields({ agentId, sessionId, op: "before_prompt_build.now", outcome: "error", error: String(err) }));
+        }
+      }
+
+      // Xanima 0.2.0: alignment note (once, after a drift pass) + goal triggers, budget-capped.
+      // 0.7: nudges are held while this session is on another task, and on a content-free prompt.
+      if (surface !== "voice") {
+        try {
+          const g = core.buildGoalTurnContext(agentId, lastUserMsg ?? "", cfg, Date.now(), log, { sessionKey });
           if (g.text) parts.push(g.text);
           alignmentAcks.offer(agentId, g.noteIds ?? g.noteId); // delivered only after a real reply (llm_output)
         } catch (err) {
@@ -1501,7 +1520,14 @@ export default definePluginEntry({
       const agentId = resolveAgentId(undefined, hookCtx, config.agents);
       if (!config.agents.includes(agentId)) return;
       try {
-        const header = await core.buildSelfModelHeader(agentId, configFor(agentId), log, "chat", contextOptsFor(agentId));
+        const cfg = configFor(agentId);
+        let header = await core.buildSelfModelHeader(agentId, cfg, log, "chat", contextOptsFor(agentId));
+        // 0.7: a heartbeat runs in its own session; it sees the agent's latest current task and recent
+        // handoffs, so "look for unfinished work" never means a project that was handed to someone else.
+        try {
+          const nowBlock = core.buildNowContext(agentId, hookCtx?.sessionKey ?? "", cfg, { scope: "agent" });
+          if (nowBlock) header = header ? `${header}\n${nowBlock}` : nowBlock;
+        } catch { /* pre-v28 */ }
         if (header) return { appendContext: header };
       } catch (err) {
         log.warn(logFields({ agentId, op: "heartbeat_prompt_contribution", outcome: "error", error: String(err) }));
@@ -1557,6 +1583,21 @@ export default definePluginEntry({
         return;
       }
       log.info(logFields({ agentId, sessionId, op: "message_received", outcome: "ok", importance, isCronSession, origin, ...(importance < scored ? { cappedFrom: scored } : {}) }));
+
+      // Xanima 0.7: the owner's own words update task state — "hand X to Y" marks the matching plan /
+      // goal handed off, "let's work on X" pins the current task. Owner turns only: an attested owner
+      // (commands.ownerAllowFrom), or any clean conversational turn on a box with no owner list. Never a
+      // cron run, never another sender's message.
+      if (!isCronSession && (origin === "owner" || ownerAllowFrom.length === 0)) {
+        try {
+          const applied = core.applyTaskSignals(agentId, sessionKey, content, { config: configFor(agentId), origin: "owner" });
+          if (applied.focus || applied.handoffs.length || applied.unmatched.length) {
+            log.info(logFields({ agentId, sessionId, op: "message_received.task_signals", outcome: "ok", focus: applied.focus?.title ?? "", handoffs: applied.handoffs.map((h) => `${h.kind}:${h.title}→${h.to}`).join(","), unmatched: applied.unmatched.map((u) => `${u.what}→${u.to}`).join(",") }));
+          }
+        } catch (err) {
+          log.debug?.(logFields({ agentId, sessionId, op: "message_received.task_signals", outcome: "error", error: String(err) }));
+        }
+      }
 
       if (config.llmExtractionEnabled && importance >= config.llmExtractionMinImportance) {
         core.queueEpisodeForExtraction(agentId, {
@@ -1712,7 +1753,10 @@ export default definePluginEntry({
         log.debug?.(logFields({ agentId, op: "after_compaction.episode", outcome: "error", error: String(err) }));
       }
       try {
-        core.handleCompaction(agentId, event ?? {}, configFor(agentId), log);
+        // 0.7: with the session key, core also reads task signals from the summary and writes the
+        // session's current task + recent handoffs back as one episode — the compacted turns are gone,
+        // the state is not.
+        core.handleCompaction(agentId, event ?? {}, configFor(agentId), log, { sessionKey });
       } catch (err) {
         log.warn(logFields({ agentId, op: "after_compaction.handle", outcome: "error", error: String(err) }));
       }
