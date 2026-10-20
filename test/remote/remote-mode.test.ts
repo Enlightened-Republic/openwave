@@ -275,7 +275,7 @@ describe("remote brain mode: degraded service (no server needed)", () => {
   test("local mode (default) is unchanged: local tools, local cron, no remote runtime", async () => {
     const h = setup({ agents: ["ow-local"] });
     expect(__remoteRuntimeForTests()).toBeNull();
-    expect(h.rec.tools.length).toBe(43);
+    expect(h.rec.tools.length).toBe(44);
     await h.fire("gateway_start", {}, { getCron: () => ({ list: async () => [], add: async (j: unknown) => { h.cron.added.push(j); }, update: async () => {}, remove: async () => ({}) }) });
     expect(h.cron.added.length).toBe(1);
     expect(existsSync(join(dataDir(), "ow-local", "brain.db"))).toBe(true);

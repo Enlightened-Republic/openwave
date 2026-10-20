@@ -235,10 +235,17 @@ from the service's `config.json` `brain` block instead).
 - **Identity (0.5.0):** `identity` (`changesFrom`, `selfEdit`, `refuseUntrusted`,
   `saveRefusedAsNote`, `locked`, `maxChangesPerDay`, `maxChars`,
   `requireAttestation`), `identityMirror`, `identityTrustedTools`.
-- **Memory for life (unreleased):** `forgetting` (`dormant` | `delete`, default
+- **Memory for life (0.6.0):** `forgetting` (`dormant` | `delete`, default
   `dormant`: faded memories stay on disk and come back on an explicit search),
   `procedures` (true) and `procedureVerifyAfter` (2): plans the agent carried
   out become step-by-step procedures, verified by repeated success.
+- **Current task and handoffs (0.7.0):** `currentTask` (true): each
+  conversation carries what it is working on (`brain_now`, set automatically
+  by `brain_plan` and from the owner's words), injected every turn as
+  `[BRAIN: now]` and kept across compaction; a bare "continue" then means
+  this task. `taskFrameTtlHours` (48). `handoffDetection` (true): "hand X to
+  Y" / "Y will take over X" in the owner's own message marks the matching
+  plan or goal handed off; "let's work on X" pins the current task.
 - **Soul Package (0.4.0):** `soulExportProfile` (`compact` | `full`),
   `soulTokenBudget`, `soulMinFactConfidence`, `soulImportConfidence`,
   `soulMergeApplyTheirs`, `soulPackageOnExport`.
@@ -446,7 +453,7 @@ overrides (the engine runs on the service), and the four local-only tools
 
 ## Tools
 
-xanima registers all **43** `brain_*` tools. Definitions and executors come
+xanima registers all **44** `brain_*` tools. Definitions and executors come
 from `xanima-core`'s unified tool module, so this plugin and the `xanima` MCP
 server can never expose a drifted schema.
 
@@ -458,6 +465,39 @@ server can never expose a drifted schema.
 | reflection, open items, plans (0.3.0) | `brain_reflect`, `brain_replay`, `brain_hypothesis`, `brain_question`, `brain_list_open`, `brain_commit`, `brain_commitments`, `brain_plan`, `brain_changes`, `brain_conflicts`, `brain_briefing`, `brain_forget_impact` |
 | soul (0.4.0) | `brain_export_soul` |
 | rooms, focus, identity (0.5.0) | `brain_room`, `brain_publish`, `brain_unpublish`, `brain_room_query`, `brain_subscribe`, `brain_focus`, `brain_identity` |
+| current task (0.7.0) | `brain_now` (`set` / `get` / `clear`); `brain_plan` and `brain_update_goal` gain `handoff` (`to`) and `resume` takes a handed-off plan / goal back |
+
+### Current task and handoffs (0.7.0)
+
+Stored state — active goals, drift nudges, parked plans — is re-injected on
+every turn, and once OpenClaw has compacted a long conversation it is all the
+agent has left. That is how "continue" used to pull an older, unfinished
+project forward even after the owner had handed it to another agent in that
+very conversation. Now each conversation (session key) carries a **current
+task**: `brain_now set` pins it; `brain_plan create` / `step` / `resume` pin
+the plan; and on the owner's own turns (an attested owner, or any clean
+conversational turn on a box with no `commands.ownerAllowFrom`) the plugin
+reads the message for task signals — "let's work on X" / "switching to X"
+pins X, "hand X off to Y" / "Y will take over X" / "X was handed to Y" marks
+the matching plan or goal **handed off** (status `handed_off`, note: the
+owner's sentence). The task lives in the brain, survives compaction and
+restarts, expires after `taskFrameTtlHours` untouched, and is injected first
+on every turn as `[BRAIN: now]` (what you are working on, the plan step you
+are on, recent handoffs). A content-free prompt ("continue", "go on", "ok",
+"next") means *this* task: topic recall is skipped, this session's last
+turns are injected instead, and goal / commitment nudges are held. A
+handed-off goal or plan leaves the goals header, drift checks, heartbeats and
+briefings until `resume` takes it back; recall still finds it and says whose
+it is. Heartbeats see the agent's latest task and recent handoffs, so "look
+for unfinished work" never means a project that belongs to someone else.
+`after_compaction` reads the summary for task signals and writes the
+session's state back as one `[session state after compaction]` episode.
+
+Remote mode: the service does the same through `brain_turn_context`
+(`session_key`, `owner_turn`, returns `now`) and every continuity tool carries
+`session_key`; compaction restore and this-session turns are local-mode only
+(the conversation's own context still has them unless it was compacted).
+Needs xanima-server ≥ 0.7.0; older services ignore the arguments.
 
 **Result shape.** Every `brain_*` tool (local and remote mode) returns
 `{ content: [{ type: "text", text }], details: { text, error?, data? } }` and
@@ -648,6 +688,18 @@ this checkout. CI does not build the server, so the remote suites skip there.
 
 ## Release notes
 
+- **0.7.0** — engine `xanima-core` 0.7.0 (schema v28): the current task and
+  handoffs. Every turn starts with `[BRAIN: now]` (what this conversation is
+  working on, the plan step, recent handoffs); `brain_now`; `brain_plan` /
+  `brain_update_goal` `handoff` and take-back via `resume`; the owner's own
+  words set task state (`handoffDetection`: "hand X to Y", "let's work on
+  X"); a bare "continue" skips topic recall, injects this session's last
+  turns and holds goal / commitment nudges; nudges are held while the
+  conversation is on another task; `after_compaction` restores the task and
+  handoffs from the summary; heartbeats carry the latest task. Settings
+  `currentTask`, `taskFrameTtlHours`, `handoffDetection`. Remote mode sends
+  `session_key` / `owner_turn` to `brain_turn_context` and `session_key` on
+  every continuity tool (xanima-server ≥ 0.7.0).
 - **0.6.0** — engine `xanima-core` 0.6.0 (schema v27):
   forgetting is dormancy (`forgetting`), plans carried out become verified
   procedures (`procedures`, `procedureVerifyAfter`), `brain_query

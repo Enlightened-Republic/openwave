@@ -137,7 +137,7 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
     expect(bad.codeMode.error).toContain("query");
   });
 
-  test("all 39 proxied tools return content text + details.text (none project to {})", async () => {
+  test("all 40 proxied tools return content text + details.text (none project to {})", async () => {
     const [a, b, c] = ids as [string, string, string];
     const calls: Array<[string, Record<string, unknown>, RegExp]> = [
       ["brain_query", { query: "Hailey" }, /Hailey has a corgi named Biscuit/],
@@ -165,7 +165,9 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
       ["brain_list_open", {}, /cake this year/],
       ["brain_commit", { action: "create", title: "book the table for the dinner", due: "tomorrow" }, /Commitment recorded/],
       ["brain_commitments", {}, /book the table/],
-      ["brain_plan", { action: "create", title: "Birthday dinner plan", steps: ["book", "invite"], goal_id: "__GOAL__" }, /Plan created/],
+      ["brain_plan", { action: "create", title: "Birthday dinner plan", steps: ["book", "invite"], goal_id: "__GOAL__" }, /Plan created and pinned as this session's current task/],
+      // 0.7: the plan above pinned this session's task on the service (the plugin sent session_key)
+      ["brain_now", { action: "get" }, /^Working on: Birthday dinner plan \(from the plan, just now\)/],
       ["brain_changes", { goal_id: "__GOAL__", days: 1 }, /Changes about goal/],
       ["brain_conflicts", { topic: "Hailey tacos" }, /./],
       ["brain_briefing", { goal_id: "__GOAL__" }, /^Briefing — /],
@@ -232,7 +234,11 @@ describe.skipIf(!HAVE_SERVER)("remote tool results returned to OpenClaw (real sh
 
   test("before_prompt_build recall injects the real Hailey memories in remote mode", async () => {
     const [res] = await mock.fire("before_prompt_build", { prompt: "What do you remember about Hailey?" }, { agentId: AGENT, sessionKey: `agent:${AGENT}:main`, sessionId: "s-main" });
-    const block = (res as { prependContext?: string } | undefined)?.prependContext ?? "";
+    const raw = (res as { prependContext?: string } | undefined)?.prependContext ?? "";
+    // 0.7: the all-tools test above created a plan from this session, so the service also returns the
+    // session's current task; it sits between the identity header and recall and is checked separately.
+    expect(raw).toMatch(/\n\n\[BRAIN: now\]\nWorking on: /);
+    const block = raw.replace(/\[BRAIN: now\][\s\S]*?\n\n/, "");
     // the brain_identity add in the all-tools test shows in the always-on identity header from the next turn
     // ...with the steering note: identity changes only by the agent's own reflection; learning → brain_write
     expect(block.startsWith(`[BRAIN: identity] - **Vibe:** steady ${IDENTITY_STEERING_NOTE}\n\n` + RECALL_BLOCK_HEADER)).toBe(true);

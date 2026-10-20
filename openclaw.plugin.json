@@ -4,7 +4,7 @@
   "legacyPluginIds": [
     "openwave"
   ],
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Xanima (formerly openwave): autonomic memory and agent continuity for OpenClaw agents. Injects identity, goals and query-relevant recall (with confidence and relative-time labels) into every turn, and runs the sleep system. Powered by xanima-core. 0.2.0 adds a decision ledger, versioned goals with drift detection, alignment notes and goal triggers; 0.3.0 adds reflection, experience replay, hypotheses / questions / assumptions, commitments and plans (park / resume briefings) and meta-tools; 0.4.0 adds the portable Soul Package (brain_export_soul for the agent's own brain, and the brain_review queue for imported identity / goal changes); 0.5.0 adds shared rooms on the brain service (brain_room / brain_publish / brain_room_query / brain_subscribe), brain_focus and injection categories, and the poisoning quarantine; 0.6.0 keeps every memory (dormant, never deleted), turns plans carried out into verified procedures, and changes identity only with the owner.",
   "activation": {
     "onStartup": true
@@ -42,6 +42,7 @@
       "brain_commit",
       "brain_commitments",
       "brain_plan",
+      "brain_now",
       "brain_changes",
       "brain_conflicts",
       "brain_briefing",
@@ -152,6 +153,22 @@
         "minimum": 1,
         "default": 2,
         "description": "Successful runs before a compiled procedure counts as verified and is injected as an operational rule (default 2). A matching abandoned plan counts as a failure; when failures catch up the procedure is demoted."
+      },
+      "currentTask": {
+        "type": "boolean",
+        "default": true,
+        "description": "Each conversation carries a current task (brain_now; set automatically by brain_plan create / step / resume and from the owner's words). Injected every turn as [BRAIN: now], kept across context compaction; a bare \"continue\" / \"go on\" / \"ok\" then means this task: topic recall is skipped and goal / commitment nudges are held. false restores the pre-0.7 behaviour."
+      },
+      "taskFrameTtlHours": {
+        "type": "number",
+        "minimum": 1,
+        "default": 48,
+        "description": "Hours a conversation's current task stays current without being touched (default 48)."
+      },
+      "handoffDetection": {
+        "type": "boolean",
+        "default": true,
+        "description": "The owner's own words update task state: \"hand X off to Y\" / \"Y will take over X\" marks the matching plan or goal handed off (out of the goals header, drift checks, heartbeats and briefings until resumed), \"let's work on X\" / \"switching to X\" pins the current task. Owner turns and compaction summaries only; never tool output or another sender."
       },
       "ingestionModel": {
         "type": "string",

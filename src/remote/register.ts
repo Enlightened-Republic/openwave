@@ -60,6 +60,9 @@ export const REMOTE_DISABLED_FEATURES: readonly string[] = [
 export const EPISODE_APPEND_TOOL = "brain_episode_append";
 
 /** Tools the brain service serves (sharpwave-server SERVICE_TOOLS) that are proxied to the model. */
+/** 0.7: continuity tools carry the conversation's session_key to the service (task frames are per session). */
+const CONTINUITY_NAMES = new Set<string>(core.CONTINUITY_TOOL_NAMES);
+
 export const REMOTE_TOOL_NAMES = [
   "brain_query",
   "brain_write",
@@ -90,6 +93,8 @@ export const REMOTE_TOOL_NAMES = [
   "brain_commit",
   "brain_commitments",
   "brain_plan",
+  // Xanima 0.7 current task (served by xanima-server >= 0.7.0; older services answer "unknown tool")
+  "brain_now",
   "brain_changes",
   "brain_conflicts",
   "brain_briefing",
@@ -110,7 +115,7 @@ export const REMOTE_TOOL_NAMES = [
 /** Service plumbing (xanima-server >= 0.2.0): alignment note + goal triggers for this turn. Not exposed to the model. */
 export const TURN_CONTEXT_TOOL = "brain_turn_context";
 const CONTINUITY_TOOLS = new Set<string>(["brain_record_decision", "brain_update_decision_outcome", "brain_query_decisions", "brain_set_goal", "brain_update_goal", "brain_list_goals",
-  "brain_reflect", "brain_replay", "brain_hypothesis", "brain_question", "brain_list_open", "brain_commit", "brain_commitments", "brain_plan", "brain_changes", "brain_conflicts", "brain_briefing", "brain_forget_impact", "brain_export_soul",
+  "brain_reflect", "brain_replay", "brain_hypothesis", "brain_question", "brain_list_open", "brain_commit", "brain_commitments", "brain_plan", "brain_now", "brain_changes", "brain_conflicts", "brain_briefing", "brain_forget_impact", "brain_export_soul",
   "brain_room", "brain_publish", "brain_unpublish", "brain_room_query", "brain_subscribe", "brain_focus", "brain_identity"]);
 
 // Copied verbatim from xanima-core buildRecallContext so the injected block
@@ -470,8 +475,11 @@ export function registerRemoteMode(
           await ensureAgent(who.agentId);
           const conn = conns.get(who.agentId);
           if (!conn?.client) return brainToolResult(`openwave (remote mode): no brain service connection for agent "${who.agentId}": ${conn?.lastError ?? "not configured"}`, { isError: true });
-          const args = name === IDENTITY_TOOL ? attestIdentityArgs(params ?? {}, identityProv, provKey(toolContext)) : (params ?? {});
+          const args = name === IDENTITY_TOOL ? attestIdentityArgs(params ?? {}, identityProv, provKey(toolContext)) : { ...(params ?? {}) };
           if (name === IDENTITY_TOOL && args["attested_provenance"]) log.info(logFields({ op: "identity.attest", agentId: who.agentId, origin: (args["attested_provenance"] as { origin: string }).origin, session: provKey(toolContext) }));
+          // 0.7: continuity tools (brain_now, brain_plan, …) carry the conversation they belong to; the service keys
+          // the current task by it. Older services ignore the argument.
+          if (CONTINUITY_NAMES.has(name) && args["session_key"] === undefined && provKey(toolContext)) args["session_key"] = provKey(toolContext).slice(0, 200);
           const r = await call(who.agentId, `tool.${name}`, name, args);
           if (r && !r.isError && name === IDENTITY_TOOL && identityCfg.identityMirror === true && ["add", "change", "remove"].includes(String(args["action"]))) {
             void mirrorIdentity(who.agentId, removedFieldOf(args));
@@ -856,10 +864,19 @@ export function registerRemoteMode(
       if (!conn?.client) {
         return surface === "voice" ? undefined : { appendSystemContext: REMOTE_DOWN_NOTICE };
       }
-      const wantRecall = query.length >= 3;
+      // 0.7: a content-free prompt ("continue") skips topic recall — the service's `now` block says what it means.
+      const lowInfo = config.currentTask !== false && core.isLowInformationPrompt(query);
+      const wantRecall = query.length >= 3 && !lowInfo;
       // Xanima 0.2.0: alignment note (offered; acked after a real reply) + goal triggers from the service.
-      const wantGoals = surface !== "voice" && !(config.intentDriftCheck === "off" && config.goalTriggers === false) && !turnContextUnsupported.has(agentId);
+      // 0.7: also the session's current task (`now`), and — on the owner's own turn — task signals from the message.
+      const wantGoals = surface !== "voice" && !turnContextUnsupported.has(agentId) && (!(config.intentDriftCheck === "off" && config.goalTriggers === false) || config.currentTask !== false);
       const wantStatus = surface !== "voice" && config.selfStatus !== false;
+      const ownerTurn = (() => {
+        try {
+          const o = identityProv.attest(provKey(hookCtx), []).origin;
+          return o === "owner_turn" || (o === "agent_turn" && readOwnerAllowFrom(api.runtime?.config?.current?.()).length === 0);
+        } catch { return false; }
+      })();
       const [r, g, footer] = await Promise.all([
         wantRecall
           ? call(agentId, "before_prompt_build.recall", "brain_query", {
@@ -872,7 +889,7 @@ export function registerRemoteMode(
             inject: true,
           })
           : Promise.resolve(undefined),
-        wantGoals ? call(agentId, "before_prompt_build.goals", TURN_CONTEXT_TOOL, { query: query.slice(0, 2000) }) : Promise.resolve(undefined),
+        wantGoals ? call(agentId, "before_prompt_build.goals", TURN_CONTEXT_TOOL, { query: query.slice(0, 2000), session_key: sessionKey.slice(0, 200), ...(ownerTurn && config.handoffDetection !== false ? { owner_turn: true } : {}) }) : Promise.resolve(undefined),
         wantStatus ? statusFooterFor(agentId) : Promise.resolve(""),
       ]);
 
@@ -894,8 +911,10 @@ export function registerRemoteMode(
       if (!down && g) {
         if (!g.isError) {
           try {
-            const parsed = JSON.parse(g.text) as { text?: string; noteId?: number | null; noteIds?: number[]; identity?: string; activeGoals?: string[] };
+            const parsed = JSON.parse(g.text) as { text?: string; noteId?: number | null; noteIds?: number[]; identity?: string; activeGoals?: string[]; now?: string };
             goalsBlock = String(parsed.text ?? "");
+            // 0.7: the session's current task comes first — above the goals block and recall.
+            if (typeof parsed.now === "string" && parsed.now.trim() && config.currentTask !== false) goalsBlock = goalsBlock ? `${parsed.now.trim()}\n\n${goalsBlock}` : parsed.now.trim();
             // Xanima 0.4.0 soulHeader: the brain's identity (and optionally its top active goals) as a short header —
             // parity with local mode's never-compacted header, so a soul imported into a fresh brain is visible.
             // Unset (default "identity"): skipped when MEMORY.md / USER.md owns identity (externalMemoryActive).
